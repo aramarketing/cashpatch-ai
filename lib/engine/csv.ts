@@ -59,7 +59,7 @@ export function parseMoneyLeakCsv(text:string,maxRows=500):MoneyEventInput[]{
       paidAmount:numberOrUndefined(get(cells,'paid_amount')),
       previousAmount:numberOrUndefined(get(cells,'previous_amount')),
       renewalInDays:numberOrUndefined(get(cells,'renewal_in_days')),
-      evidence:(get(cells,'evidence')||'').split('|').map(x=>x.trim()).filter(Bolean).slice(0,20),
+      evidence:(get(cells,'evidence')||'').split('|').map(x=>x.trim()).filter(Boolean).slice(0,20),
     })
   }
   return rows

@@ -1,50 +1,54 @@
-import Stripe from 'stripe'
 import { NextResponse } from 'next/server'
+import Stripe from 'stripe'
 import { createStripe } from '@/lib/stripe/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-export const runtime = 'nodejs'
-
-const idOf = (value:string|Stripe.Customer|Stripe.Subscription|null):string|null => {
-  if (!value) return null
-  return typeof value==='string' ? value : value.id
+function idOf(value: string | { id: string } | null | undefined) {
+  return typeof value === 'string' ? value : value?.id ?? null
 }
 
-async function syncSubscription(subscription:Stripe.Subscription) {
+function periodEnd(subscription: Stripe.Subscription) {
+  const ts = subscription.items.data[0]?.current_period_end
+  return ts ? new Date(ts * 1000).toISOString() : null
+}
+
+async function syncSubscription(subscription: Stripe.Subscription) {
   const workspaceId = subscription.metadata.workspace_id
-  if (!workspaceId) throw new Error('Missing workspace_id metadata')
-  const stripe = createStripe()
-  const item = subscription.items.data[0]
-  const priceId = idOf(item?.price as any)
-  let productId:string|null = null
-  if (item?.price) {
-    const p = item.price.product
-    productId = typeof p==='string' ? p : p?.id ?? null
-  }
-  const customerId = idOf(subscription.customer as any)
+  if (!workspaceId) return
   const supabase = createAdminClient()
-  const plan = subscription.metadata.plan==='pro'?'pro':'standard'
-  const interval = subscription.metadata.interval==='year'?'year':'month'
-  const currentPeriodEnd = (typeof (subscription as any).current_period_end === 'number') ? new Date((subscription as any).current_period_end * 1000).toISOString() : null
+  const item = subscription.items.data[0]
+  const price = item?.price
+  const productId = idOf(price?.product)
+  const plan = subscription.metadata.plan === 'pro' ? 'pro' : 'standard'
+  const interval = price?.recurring?.interval === 'year' ? 'year' : 'month'
+  const status = subscription.status
 
   await supabase.from('billing_accounts').upsert({
     workspace_id: workspaceId,
-    stripe_customer_id: customerId,
+    stripe_customer_id: idOf(subscription.customer),
     stripe_subscription_id: subscription.id,
-    stripe_price_id: priceId, stripe_product_id: productId, plan, billing_interval: interval,
-    status: subscription.status, current_period_end: currentPeriodEnd,
-    cancel_at_period_end: subscription.cancel_at_period, updated_at: new Date().toISOString()
+    stripe_price_id: price?.id ?? null,
+    stripe_product_id: productId,
+    plan,
+    billing_interval: interval,
+    status,
+    current_period_end: periodEnd(subscription),
+    cancel_at_period_end: subscription.cancel_at_period_end,
+    updated_at: new Date().toISOString(),
   }, { onConflict: 'workspace_id' })
+
   await supabase.from('workspaces').update({
-    plan, billing_status: subscription.status, billing_period_end: currentPeriodEnd,
-    billing_cancel_at_period_end: subscription.cancel_at_period,
+    plan,
+    billing_status: status,
+    billing_period_end: periodEnd(subscription),
+    billing_cancel_at_period_end: subscription.cancel_at_period_end,
   }).eq('id', workspaceId)
 }
 
 export async function POST(request: Request) {
   const stripe = createStripe()
   const secret = process.env.STRIPE_WEBHOOK_SECRET
-  if (!secret) return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 })
+  if (!secret) return NextResponse.json({ error: 'Webhook secret missing' }, { status: 500 })
   const signature = request.headers.get('stripe-signature')
   if (!signature) return NextResponse.json({ error: 'Missing signature' }, { status: 400 })
 
