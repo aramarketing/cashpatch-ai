@@ -173,3 +173,106 @@ export function detectRecurringCostIncreases(transactions: BankTransaction[]): B
 
   return findings
 }
+
+
+type ProviderTransaction = {
+  transactionId?: string
+  internalTransactionId?: string
+  bookingDate?: string
+  bookingDateTime?: string
+  valueDate?: string
+  transactionAmount?: { amount?: string | number; currency?: string }
+  creditorName?: string
+  debtorName?: string
+  remittanceInformationUnstructured?: string
+  remittanceInformationUnstructuredArray?: string[]
+  additionalInformation?: string
+}
+
+function providerDescription(tx: ProviderTransaction) {
+  return [
+    tx.remittanceInformationUnstructured,
+    ...(tx.remittanceInformationUnstructuredArray ?? []),
+    tx.additionalInformation,
+  ].filter(Boolean).join(' · ')
+}
+
+function normalizeProviderTransaction(
+  accountId: string,
+  raw: ProviderTransaction,
+  status: 'booked' | 'pending',
+  index: number,
+): BankTransaction | null {
+  const amount = Number(raw.transactionAmount?.amount)
+  const currency = String(raw.transactionAmount?.currency ?? '').toUpperCase()
+  const bookedAt = raw.bookingDateTime ?? raw.bookingDate ?? raw.valueDate
+  if (!Number.isFinite(amount) || !currency || !bookedAt) return null
+
+  const counterparty = amount < 0
+    ? raw.creditorName ?? raw.debtorName
+    : raw.debtorName ?? raw.creditorName
+
+  const fallbackId = [
+    accountId,
+    status,
+    bookedAt,
+    String(amount),
+    currency,
+    counterparty ?? '',
+    String(index),
+  ].join(':')
+
+  return {
+    id: raw.transactionId ?? raw.internalTransactionId ?? fallbackId,
+    accountId,
+    bookedAt,
+    amount,
+    currency,
+    counterparty,
+    description: providerDescription(raw),
+    status,
+  }
+}
+
+export function normalizeOpenBankingSync(payload: unknown): BankTransaction[] {
+  const data = payload as {
+    accounts?: Array<{
+      accountId?: string
+      transactions?: {
+        transactions?: {
+          booked?: ProviderTransaction[]
+          pending?: ProviderTransaction[]
+        }
+      }
+    }>
+  }
+
+  const result: BankTransaction[] = []
+  for (const account of data.accounts ?? []) {
+    const accountId = String(account.accountId ?? '')
+    if (!accountId) continue
+
+    const booked = account.transactions?.transactions?.booked ?? []
+    const pending = account.transactions?.transactions?.pending ?? []
+
+    booked.forEach((tx, index) => {
+      const normalized = normalizeProviderTransaction(accountId, tx, 'booked', index)
+      if (normalized) result.push(normalized)
+    })
+
+    pending.forEach((tx, index) => {
+      const normalized = normalizeProviderTransaction(accountId, tx, 'pending', index)
+      if (normalized) result.push(normalized)
+    })
+  }
+
+  return result.sort((a, b) => new Date(b.bookedAt).getTime() - new Date(a.bookedAt).getTime())
+}
+
+export function analyzeBankTransactions(transactions: BankTransaction[]): BankingFinding[] {
+  return [
+    ...detectDuplicateCharges(transactions),
+    ...detectBankFees(transactions),
+    ...detectRecurringCostIncreases(transactions),
+  ].sort((a, b) => b.confidence - a.confidence || b.amount - a.amount)
+}
