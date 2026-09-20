@@ -104,10 +104,19 @@ export default async function SourcesPage() {
         </div>
       </header>
 
+      <section className="review-only-banner">
+        <div>
+          <p className="eyebrow">REVIEW-ONLY GUARANTEE</p>
+          <h2>CashPatch can see. CashPatch cannot change.</h2>
+          <p>Connected systems are read-only. CashPatch may analyze, synchronize and create recommendations inside CashPatch, but it cannot send, edit, delete, click, type, submit, move, charge, refund or modify anything in the source system.</p>
+        </div>
+        <span className="review-lock">READ ONLY</span>
+      </section>
+
       <section className="source-principles">
         <article><span>01</span><strong>No uploads</strong><p>Connections replace manual file handling.</p></article>
-        <article><span>02</span><strong>Read first</strong><p>CashPatch starts with least-privilege, read-only access wherever possible.</p></article>
-        <article><span>03</span><strong>Always scanning</strong><p>New signals are synced and rescored automatically.</p></article>
+        <article><span>02</span><strong>Least privilege</strong><p>Only review scopes are accepted. If a provider cannot guarantee read-only access, CashPatch does not connect.</p></article>
+        <article><span>03</span><strong>Always scanning</strong><p>New signals are synced and rescored automatically without changing the source.</p></article>
       </section>
 
       <section className="source-grid">
@@ -118,7 +127,7 @@ export default async function SourcesPage() {
           return <article className="source-card" key={provider.key}>
             <div className="source-card-top">
               <span className="source-group">{provider.group}</span>
-              <span className={`source-status ${live ? 'connected' : ''}`}>{status}</span>
+              <span className={`source-status ${live ? 'connected' : ''}`}>{status} · review only</span>
             </div>
             <h2>{provider.name}</h2>
             <p>{provider.description}</p>
