@@ -58,12 +58,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'bank_source_not_available' }, { status: 403 })
     }
 
-    const { data: connection } = await admin
-      .schema('private')
-      .from('banking_connections')
-      .select('requisition_id,consent_status')
-      .eq('source_connection_id', sourceConnectionId)
-      .maybeSingle()
+    const { data: privateRows, error: privateReadError } = await admin.rpc('banking_connection_get', {
+      p_source_connection_id: sourceConnectionId,
+    })
+    if (privateReadError) throw privateReadError
+    const connection = Array.isArray(privateRows) ? privateRows[0] : null
 
     if (!connection || connection.consent_status !== 'linked') {
       return NextResponse.json({ error: 'bank_consent_not_linked' }, { status: 409 })
@@ -90,11 +89,9 @@ export async function POST(request: Request) {
       })
     )
 
-    await admin
-      .schema('private')
-      .from('banking_connections')
-      .update({ last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('source_connection_id', sourceConnectionId)
+    await admin.rpc('banking_connection_mark_synced', {
+      p_source_connection_id: sourceConnectionId,
+    })
 
     return NextResponse.json({
       sourceConnectionId,
