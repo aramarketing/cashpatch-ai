@@ -21,6 +21,21 @@ type Entitlement = {
   plan?: string
 }
 
+type LocalAiRuntime = {
+  key: string
+  name: string
+  endpoint: string
+  available: boolean
+}
+
+type DetectedSource = {
+  key: string
+  name: string
+  kind: string
+  installed: boolean
+  permissionHint: string
+}
+
 type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
 
 const PORTAL = 'https://cashpatch-ai.vercel.app'
@@ -31,6 +46,8 @@ export default function App() {
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null)
   const [message, setMessage] = useState('Starting secure local watchdog…')
   const [autostart, setAutostart] = useState(false)
+  const [localAi, setLocalAi] = useState<LocalAiRuntime[]>([])
+  const [detectedSources, setDetectedSources] = useState<DetectedSource[]>([])
   const pollRef = useRef<number | null>(null)
 
   const refreshEntitlement = async () => {
@@ -54,6 +71,10 @@ export default function App() {
 
   useEffect(() => {
     if (phase !== 'ready') return
+
+    invoke<LocalAiRuntime[]>('discover_local_ai').then(setLocalAi).catch(() => setLocalAi([]))
+    invoke<DetectedSource[]>('discover_supported_apps').then(setDetectedSources).catch(() => setDetectedSources([]))
+
     const id = window.setInterval(refreshEntitlement, 5 * 60 * 1000)
     return () => window.clearInterval(id)
   }, [phase])
@@ -172,8 +193,8 @@ export default function App() {
         </article>
         <article>
           <p className="eyebrow">LOCAL AI</p>
-          <h3>Runtime discovery next</h3>
-          <p>Ollama, LM Studio and bundled local models will appear here.</p>
+          <h3>{localAi.filter(runtime => runtime.available).length > 0 ? 'Local runtime detected' : 'No local runtime yet'}</h3>
+          <p>{localAi.filter(runtime => runtime.available).map(runtime => runtime.name).join(', ') || 'CashPatch checked Ollama and LM Studio locally. Setup guidance comes next.'}</p>
         </article>
         <article>
           <p className="eyebrow">AUTOSTART</p>
@@ -181,9 +202,10 @@ export default function App() {
           {!autostart && <button className="secondary" onClick={enableAutostart}>Enable autostart</button>}
         </article>
         <article>
-          <p className="eyebrow">SOURCES</p>
-          <h3>0 connected</h3>
-          <p>CashPatch will ask only when a read permission is actually needed.</p>
+          <p className="eyebrow">SOURCES DISCOVERED</p>
+          <h3>{detectedSources.filter(source => source.installed).length} supported apps found</h3>
+          <p>{detectedSources.filter(source => source.installed).map(source => source.name).join(', ') || 'CashPatch did not find a supported local app yet.'}</p>
+          {detectedSources.some(source => source.installed) && <button className="secondary" onClick={() => openUrl(`${PORTAL}/dashboard/sources`)}>Review permissions</button>}
         </article>
         <article>
           <p className="eyebrow">UPDATES</p>
