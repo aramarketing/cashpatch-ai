@@ -8,6 +8,7 @@ export async function GET() {
     app: 'cashpatch',
     supabase: false,
     stripe: false,
+    stripeWebhookSecretConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
   }
 
   try {
