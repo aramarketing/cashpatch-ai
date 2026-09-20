@@ -20,3 +20,17 @@
 .empty{text-align:center;padding:55px 24px}
 .orb{width:64px;height:64px;border-radius:50%;border:1px solid rgba(217,255,100,.28);display:grid;place-items:center;margin:0 auto 18px;color:#d9ff64}
 @media(max-width:1080px){.source-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.app main{padding:28px}.app header h1{font-size:52px}}
+
+.local-findings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
+.local-finding{border:1px solid rgba(243,237,223,.11);border-radius:20px;padding:20px;background:rgba(20,20,17,.78)}
+.local-finding-top{display:flex;justify-content:space-between;gap:12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#8f8a80}
+.local-finding-top strong{color:#d9ff64}
+.local-finding h3{font:400 29px Georgia,serif;letter-spacing:-.035em;margin:18px 0 8px}
+.local-finding-amount{font:400 31px Georgia,serif;color:#f3eddf;margin-bottom:12px}
+.local-finding>p{color:#aaa396;line-height:1.55}
+.local-next{display:grid;gap:7px;border-top:1px solid rgba(243,237,223,.11);padding-top:15px;margin-top:17px}
+.local-next span{font-size:9px;letter-spacing:.12em;color:#8f8a80}
+.local-next b{font-size:13px;line-height:1.45}
+.local-finding>small{display:block;color:#6f6b63;margin-top:15px}
+.connected-source-card{border-color:rgba(217,255,100,.2)}
+@media(max-width:1080px){.local-findings{grid-template-columns:1fr}}
