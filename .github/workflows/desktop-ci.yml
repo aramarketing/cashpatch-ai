@@ -30,5 +30,8 @@ jobs:
       - name: Build desktop frontend
         working-directory: desktop
         run: npm run build
+      - name: Generate platform icons
+        working-directory: desktop
+        run: npx tauri icon src-tauri/icons/icon.png
       - name: Check Tauri backend
         run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
