@@ -140,6 +140,13 @@ Examples:
 - subscription_changed
 - duplicate_charge
 - unusual_refund
+- bank_balance_change
+- bank_transaction_received
+- invoice_payment_missing
+- invoice_payment_matched
+- duplicate_bank_charge
+- recurring_cost_increase
+- unexpected_bank_fee
 - missing_followup
 
 Each event includes:
@@ -291,16 +298,17 @@ A local audit log records every read/sync/analyze operation.
 ## Future connector strategy
 
 Priority order:
-1. Email: Gmail, Outlook
-2. Payments: Stripe, PayPal
-3. CRM: HubSpot, Salesforce, Pipedrive, Zoho, Dynamics 365
-4. Project management: Asana, ClickUp, Trello, monday.com, Jira, Notion, Linear
-5. Accounting: Xero, QuickBooks, Lexoffice, sevDesk
-6. Commerce: Shopify, WooCommerce
-7. Communication: Slack, Teams
-8. AI: OpenAI, Claude, Gemini, Perplexity, local models
-9. Universal: MCP, REST/OpenAPI, webhooks
-10. Computer/browser observers
+1. Banking: PSD2/Open Banking account information (balances + transactions only)
+2. Email: Gmail, Outlook
+3. Payments: Stripe, PayPal
+4. CRM: HubSpot, Salesforce, Pipedrive, Zoho, Dynamics 365
+5. Project management: Asana, ClickUp, Trello, monday.com, Jira, Notion, Linear
+6. Accounting: Xero, QuickBooks, Lexoffice, sevDesk
+7. Commerce: Shopify, WooCommerce
+8. Communication: Slack, Teams
+9. AI: OpenAI, Claude, Gemini, Perplexity, local models
+10. Universal: MCP, REST/OpenAPI, webhooks
+11. Computer/browser observers
 
 ## Product principle
 
