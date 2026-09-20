@@ -36,7 +36,8 @@ const providers = [
   { key:'linear', name:'Linear', group:'Project management', description:'Monitors work state and customer-related issues that may block billable progress.', note:'OAuth work-management connector' },
   { key:'basecamp', name:'Basecamp', group:'Project management', description:'Connects project communication and todos to revenue-recovery signals.', note:'OAuth work-management connector' },
 
-  // Payments, accounting & commerce
+  // Banking, payments, accounting & commerce
+  { key:'open_banking', name:'Bank accounts (Open Banking)', group:'Banking', description:'Reads approved account balances and transactions so CashPatch can match expected money with what actually arrived or left the account.', note:'PSD2/Open Banking · account information only' },
   { key:'stripe', name:'Stripe', group:'Payments', description:'Watches subscriptions, invoices, failed payments and customers for revenue at risk.', note:'API + webhook connector' },
   { key:'paypal', name:'PayPal', group:'Payments', description:'Monitors transactions, disputes and payment state for recoverable cash.', note:'OAuth / API connector' },
   { key:'quickbooks', name:'QuickBooks', group:'Accounting', description:'Surfaces overdue invoices and customer balances automatically.', note:'OAuth accounting connector' },
