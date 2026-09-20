@@ -63,3 +63,7 @@ Recommended remediation to approve before OAuth goes live:
 ALTER TABLE private.oauth_credentials ENABLE ROW LEVEL SECURITY;
 ```
 with **no client policies**, so only privileged server-side code can access it. This remediation has intentionally NOT been auto-applied because Supabase explicitly flags it as a deliberate access-control decision.
+
+
+## Deployment
+- Stripe sandbox webhook secret added to Vercel on 2026-09-20; redeploy triggered for end-to-end verification.
