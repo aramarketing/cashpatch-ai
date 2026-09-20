@@ -1,8 +1,6 @@
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tauri::Manager;
 use uuid::Uuid;
 
 const CLOUD_BASE: &str = "https://cashpatch-ai.vercel.app";
