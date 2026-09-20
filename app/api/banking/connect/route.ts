@@ -36,6 +36,16 @@ export async function POST(request: Request) {
   const workspaceId = memberships?.[0]?.workspace_id
   if (!workspaceId) return NextResponse.json({ error: 'workspace_not_found' }, { status: 404 })
 
+  const { data: workspace } = await supabase
+    .from('workspaces')
+    .select('billing_status')
+    .eq('id', workspaceId)
+    .maybeSingle()
+
+  if (workspace?.billing_status !== 'active') {
+    return NextResponse.json({ error: 'active_subscription_required' }, { status: 402 })
+  }
+
   const admin = createAdminClient()
   const { data: source, error: sourceError } = await admin
     .from('source_connections')
