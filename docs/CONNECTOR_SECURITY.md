@@ -12,9 +12,33 @@ CashPatch may create findings, explanations, internal drafts and recommended nex
 
 Use provider-enforced read-only scopes whenever the provider offers them.
 
-Examples include mail read scopes instead of mail read/write scopes, CRM object read scopes instead of write scopes, and restricted payment keys with read access only.
+Examples include mail read scopes instead of mail read/write scopes, CRM object read scopes instead of write scopes, restricted payment keys with read access only, and bank-account access limited to account information such as balances and transactions.
 
 If a provider cannot issue a credential that is technically restricted to read-only access, CashPatch must require a dedicated source account whose permissions are read-only. If neither option is possible, that integration is not eligible for production connection.
+
+## Banking
+
+Banking integrations are account-information-only.
+
+Allowed:
+- account list
+- account identity/metadata
+- balances
+- booked and pending transactions
+- transaction counterparties and descriptions
+- recurring-transaction detection where exposed read-only
+
+Forbidden:
+- payment initiation
+- transfer creation
+- beneficiary creation or modification
+- direct debit creation
+- card controls
+- refunds
+- payouts
+- any write/payment scope
+
+CashPatch must use a licensed Open Banking / account-information provider or another compliant bank API integration. The customer authenticates with the bank/provider; CashPatch must not ask the customer to type online-banking passwords directly into CashPatch.
 
 ## Computer and browser agents
 
