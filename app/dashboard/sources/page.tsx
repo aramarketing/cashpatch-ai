@@ -11,69 +11,56 @@ type Connection = {
 }
 
 const providers = [
-  {
-    key: 'gmail',
-    name: 'Gmail',
-    group: 'Inbox intelligence',
-    description: 'Reads business conversations, quotes, follow-ups and payment promises. CashPatch watches for silence, stalled deals and money left hanging.',
-    note: 'Automatic background sync after connection',
-  },
-  {
-    key: 'outlook',
-    name: 'Microsoft Outlook',
-    group: 'Inbox intelligence',
-    description: 'Connect Microsoft 365 mail so CashPatch can detect unanswered quotes, overdue follow-ups and commercial commitments.',
-    note: 'Automatic background sync after connection',
-  },
-  {
-    key: 'stripe',
-    name: 'Stripe',
-    group: 'Payments',
-    description: 'Watches customers, subscriptions, invoices and payments for failed charges, unpaid invoices and revenue at risk.',
-    note: 'Continuous payment monitoring',
-  },
-  {
-    key: 'hubspot',
-    name: 'HubSpot',
-    group: 'CRM',
-    description: 'Tracks deals, stages and inactivity to find opportunities that are worth money but have stopped moving.',
-    note: 'CRM OAuth connector',
-  },
-  {
-    key: 'pipedrive',
-    name: 'Pipedrive',
-    group: 'CRM',
-    description: 'Monitors deal value, pipeline movement and neglected opportunities without replacing the CRM.',
-    note: 'CRM OAuth connector',
-  },
-  {
-    key: 'xero',
-    name: 'Xero',
-    group: 'Accounting',
-    description: 'Connect invoices and receivables so CashPatch can surface overdue and partially paid revenue automatically.',
-    note: 'Accounting connector',
-  },
-  {
-    key: 'quickbooks',
-    name: 'QuickBooks',
-    group: 'Accounting',
-    description: 'Monitors invoices and customer balances to surface cash that should already have arrived.',
-    note: 'Accounting connector',
-  },
-  {
-    key: 'desktop',
-    name: 'CashPatch Desktop Agent',
-    group: 'Computer',
-    description: 'A lightweight local helper for approved folders and browser workflows, so CashPatch can observe business signals without manual uploads.',
-    note: 'Local-first agent · planned',
-  },
-  {
-    key: 'ai',
-    name: 'AI workspace',
-    group: 'AI',
-    description: 'Connect supported AI workspaces so CashPatch can use existing business context and cross-check its own findings.',
-    note: 'Optional context layer',
-  },
+  // Email & communication
+  { key:'gmail', name:'Gmail', group:'Email', description:'Monitors quotes, follow-ups, payment promises and stalled conversations.', note:'OAuth · background sync' },
+  { key:'outlook', name:'Microsoft Outlook', group:'Email', description:'Reads Microsoft 365 business mail for unanswered commercial conversations and revenue signals.', note:'OAuth · background sync' },
+  { key:'slack', name:'Slack', group:'Communication', description:'Finds commercial commitments, customer handoffs and unresolved revenue-related threads.', note:'OAuth · channel-scoped access' },
+  { key:'teams', name:'Microsoft Teams', group:'Communication', description:'Uses approved Teams conversations and collaboration signals to detect stalled money workflows.', note:'Microsoft Graph connector' },
+
+  // CRM
+  { key:'hubspot', name:'HubSpot', group:'CRM', description:'Tracks deals, stages, inactivity and contact history to find neglected revenue.', note:'OAuth CRM connector' },
+  { key:'salesforce', name:'Salesforce', group:'CRM', description:'Monitors opportunities, stages, activities and account signals for recoverable pipeline value.', note:'OAuth CRM connector' },
+  { key:'pipedrive', name:'Pipedrive', group:'CRM', description:'Watches deal value, pipeline movement and opportunities that have stopped moving.', note:'OAuth CRM connector' },
+  { key:'zoho_crm', name:'Zoho CRM', group:'CRM', description:'Connects leads, deals and follow-up activity to the recovery engine.', note:'OAuth CRM connector' },
+  { key:'dynamics365', name:'Dynamics 365 Sales', group:'CRM', description:'Connects Microsoft CRM opportunities and activities with CashPatch recovery logic.', note:'Microsoft Graph / Dataverse' },
+  { key:'close', name:'Close', group:'CRM', description:'Uses sales calls, emails, SMS and pipeline context to detect missed follow-up value.', note:'API connector' },
+  { key:'freshsales', name:'Freshsales', group:'CRM', description:'Monitors leads, deals and activity gaps that may represent lost revenue.', note:'API connector' },
+
+  // Project & work management
+  { key:'asana', name:'Asana', group:'Project management', description:'Finds blocked customer work, overdue commercial tasks and handoffs tied to revenue.', note:'OAuth work-management connector' },
+  { key:'trello', name:'Trello', group:'Project management', description:'Monitors boards and cards for stalled deliverables, follow-ups and billing triggers.', note:'OAuth work-management connector' },
+  { key:'clickup', name:'ClickUp', group:'Project management', description:'Connects tasks, docs and work status to detect revenue blockers and missed billing events.', note:'OAuth work-management connector' },
+  { key:'monday', name:'monday.com', group:'Project management', description:'Watches boards and automations for overdue customer work and commercial gaps.', note:'OAuth work-management connector' },
+  { key:'jira', name:'Jira', group:'Project management', description:'Uses issue and project state to detect delivery blockers that can delay invoices or renewals.', note:'Atlassian OAuth connector' },
+  { key:'notion', name:'Notion', group:'Project management', description:'Reads approved databases and workspaces for customer commitments, follow-ups and billing cues.', note:'OAuth workspace connector' },
+  { key:'linear', name:'Linear', group:'Project management', description:'Monitors work state and customer-related issues that may block billable progress.', note:'OAuth work-management connector' },
+  { key:'basecamp', name:'Basecamp', group:'Project management', description:'Connects project communication and todos to revenue-recovery signals.', note:'OAuth work-management connector' },
+
+  // Payments, accounting & commerce
+  { key:'stripe', name:'Stripe', group:'Payments', description:'Watches subscriptions, invoices, failed payments and customers for revenue at risk.', note:'API + webhook connector' },
+  { key:'paypal', name:'PayPal', group:'Payments', description:'Monitors transactions, disputes and payment state for recoverable cash.', note:'OAuth / API connector' },
+  { key:'quickbooks', name:'QuickBooks', group:'Accounting', description:'Surfaces overdue invoices and customer balances automatically.', note:'OAuth accounting connector' },
+  { key:'xero', name:'Xero', group:'Accounting', description:'Connects invoices and receivables for overdue and partially paid revenue detection.', note:'OAuth accounting connector' },
+  { key:'lexoffice', name:'Lexoffice', group:'Accounting', description:'German SME accounting connector for invoices, contacts and receivables.', note:'API connector' },
+  { key:'sevdesk', name:'sevDesk', group:'Accounting', description:'Monitors German SME invoices and receivables for missed cash.', note:'API connector' },
+  { key:'datev', name:'DATEV', group:'Accounting', description:'Future connector for accounting data where customer/API access permits it.', note:'Partner/API dependent' },
+  { key:'shopify', name:'Shopify', group:'Commerce', description:'Watches orders, refunds, customers and payment signals for commerce leakage.', note:'OAuth / Admin API' },
+  { key:'woocommerce', name:'WooCommerce', group:'Commerce', description:'Connects orders and payment status for ecommerce recovery signals.', note:'REST API connector' },
+
+  // AI systems
+  { key:'openai', name:'OpenAI / ChatGPT', group:'AI', description:'Uses approved AI workspace or API context as an additional business-intelligence source.', note:'API / future workspace connector' },
+  { key:'claude', name:'Anthropic Claude', group:'AI', description:'Connects supported Claude/API workflows for context, cross-checking and delegated analysis.', note:'API / MCP where supported' },
+  { key:'gemini', name:'Google Gemini', group:'AI', description:'Connects supported Gemini APIs and enterprise context for delegated analysis.', note:'API connector' },
+  { key:'perplexity', name:'Perplexity', group:'AI', description:'Optional research and verification layer for supported business workflows.', note:'API connector' },
+  { key:'copilot', name:'Microsoft Copilot', group:'AI', description:'Future Microsoft AI connector where tenant APIs and permissions allow it.', note:'Microsoft ecosystem connector' },
+  { key:'local_ai', name:'Local AI models', group:'AI', description:'Connect Ollama, LM Studio and other local models through the CashPatch local bridge.', note:'Local bridge / OpenAI-compatible API' },
+
+  // Universal bridges
+  { key:'mcp', name:'MCP server', group:'Universal', description:'Connect any compatible Model Context Protocol server so new tools can be added without bespoke UI.', note:'MCP connector' },
+  { key:'custom_api', name:'REST / OpenAPI', group:'Universal', description:'Connect a custom business system using an API base URL, schema and scoped credentials.', note:'Custom API connector' },
+  { key:'webhook', name:'Webhooks', group:'Universal', description:'Let any system push money-relevant events into CashPatch in real time.', note:'Inbound webhook' },
+  { key:'desktop', name:'CashPatch Desktop Agent', group:'Computer', description:'A local macOS/Windows helper for approved folders, apps and workflows when cloud APIs are not enough.', note:'Local-first agent' },
+  { key:'browser', name:'CashPatch Browser Agent', group:'Computer', description:'Browser extension for approved sites and workflows that do not expose a usable API.', note:'Permissioned browser extension' },
 ]
 
 export default async function SourcesPage() {
