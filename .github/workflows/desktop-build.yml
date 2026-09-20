@@ -8,6 +8,10 @@ on:
       - ".github/workflows/desktop-build.yml"
   workflow_dispatch:
 
+concurrency:
+  group: desktop-test-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
