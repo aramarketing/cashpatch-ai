@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "category": "Finance",
     "shortDescription": "Local read-only business watchdog"
   },
