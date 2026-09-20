@@ -1,0 +1,5 @@
+type,counterparty,amount,currency,days_silent,days_overdue,paid_amount,previous_amount,renewal_in_days,evidence
+quote_silent,"Example Client",4800,EUR,8,,,,,"Proposal sent 12 Sep|No reply after proposal|No follow-up detected"
+invoice_overdue,"Example Customer",2650,EUR,,14,,,,"Invoice #1042|Due date passed|No matching payment signal"
+invoice_part_paid,"Example Studio",4200,EUR,,,2800,,,"Invoice total 4200|Payment signal 2800"
+vendor_renewal,"Example SaaS",1188,EUR,,,,,9,"Annual renewal notice|No review recorded"
