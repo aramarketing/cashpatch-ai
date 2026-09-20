@@ -74,18 +74,13 @@ export async function POST(request: Request) {
       userLanguage: country === 'DE' ? 'DE' : 'EN',
     })
 
-    const { error: privateError } = await admin
-      .schema('private')
-      .from('banking_connections')
-      .insert({
-        source_connection_id: source.id,
-        provider: 'gocardless_bacd',
-        requisition_id: requisition.id,
-        institution_id: institutionId,
-        country,
-        consent_status: 'pending',
-        callback_secret_hash: hash(callbackSecret),
-      })
+    const { error: privateError } = await admin.rpc('banking_connection_create', {
+      p_source_connection_id: source.id,
+      p_requisition_id: requisition.id,
+      p_institution_id: institutionId,
+      p_country: country,
+      p_callback_secret_hash: hash(callbackSecret),
+    })
 
     if (privateError) throw privateError
 
