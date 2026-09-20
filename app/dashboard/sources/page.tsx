@@ -136,7 +136,9 @@ export default async function SourcesPage() {
               <small>{live ? connected?.display_name ?? 'Connected' : provider.note}</small>
               {live
                 ? <button className="source-button secondary" type="button">Manage</button>
-                : <a className="source-button" href={provider.href ?? `/api/sources/${provider.key}/connect`}>Connect</a>}
+                : provider.href
+                  ? <a className="source-button" href={provider.href}>Connect</a>
+                  : <button className="source-button secondary" type="button" disabled>Planned</button>}
             </div>
           </article>
         })}
