@@ -1,6 +1,11 @@
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use tauri::{
+  menu::{Menu, MenuItem},
+  tray::TrayIconBuilder,
+  Manager, WindowEvent,
+};
 use uuid::Uuid;
 
 const CLOUD_BASE: &str = "https://cashpatch-ai.vercel.app";
@@ -365,7 +370,39 @@ pub fn run() {
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
       ))?;
+
+      let open = MenuItem::with_id(app, "open", "Open CashPatch", true, None::<&str>)?;
+      let quit = MenuItem::with_id(app, "quit", "Quit CashPatch", true, None::<&str>)?;
+      let menu = Menu::with_items(app, &[&open, &quit])?;
+
+      let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .tooltip("CashPatch — review-only watchdog");
+
+      if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+      }
+
+      tray
+        .on_menu_event(|app, event| match event.id.as_ref() {
+          "open" => {
+            if let Some(window) = app.get_webview_window("main") {
+              let _ = window.show();
+              let _ = window.set_focus();
+            }
+          }
+          "quit" => app.exit(0),
+          _ => {}
+        })
+        .build(app)?;
+
       Ok(())
+    })
+    .on_window_event(|window, event| {
+      if let WindowEvent::CloseRequested { api, .. } = event {
+        api.prevent_close();
+        let _ = window.hide();
+      }
     })
     .invoke_handler(tauri::generate_handler![
       pair_start,
