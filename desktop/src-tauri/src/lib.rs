@@ -124,6 +124,26 @@ struct DetectedSource {
   permission_hint: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudSource {
+  id: String,
+  provider: String,
+  category: String,
+  display_name: Option<String>,
+  status: String,
+  scopes: Vec<String>,
+  capabilities: Vec<String>,
+  permission_mode: String,
+  external_write_allowed: bool,
+  updated_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CloudSourcesResponse {
+  sources: Vec<CloudSource>,
+}
+
 fn path_exists(path: &str) -> bool {
   std::path::Path::new(path).exists()
 }
@@ -359,6 +379,55 @@ async fn entitlement_check(app: tauri::AppHandle) -> Result<EntitlementPublic, S
 }
 
 
+
+#[tauri::command]
+async fn cloud_sources(app: tauri::AppHandle) -> Result<Vec<CloudSource>, String> {
+  let device_id = secret_get("cloud-device-id").ok_or("Device is not paired")?;
+  let credential = secret_get("device-credential").ok_or("Device credential is missing")?;
+
+  let response = reqwest::Client::new()
+    .post(format!("{}/api/desktop/sources", CLOUD_BASE))
+    .json(&serde_json::json!({
+      "deviceId": device_id,
+      "deviceCredential": credential,
+      "appVersion": app.package_info().version.to_string()
+    }))
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+
+  if !response.status().is_success() {
+    return Err(format!("Source service returned {}", response.status()));
+  }
+
+  let result: CloudSourcesResponse = response.json().await.map_err(|e| e.to_string())?;
+  Ok(result.sources)
+}
+
+#[tauri::command]
+async fn banking_sync(app: tauri::AppHandle, source_connection_id: String) -> Result<serde_json::Value, String> {
+  let device_id = secret_get("cloud-device-id").ok_or("Device is not paired")?;
+  let credential = secret_get("device-credential").ok_or("Device credential is missing")?;
+
+  let response = reqwest::Client::new()
+    .post(format!("{}/api/desktop/banking/sync", CLOUD_BASE))
+    .json(&serde_json::json!({
+      "deviceId": device_id,
+      "deviceCredential": credential,
+      "appVersion": app.package_info().version.to_string(),
+      "sourceConnectionId": source_connection_id
+    }))
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+
+  if !response.status().is_success() {
+    return Err(format!("Bank sync returned {}", response.status()));
+  }
+
+  response.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn approved_folder_get() -> Option<String> {
   secret_get("approved-folder")
@@ -431,6 +500,8 @@ pub fn run() {
       entitlement_check,
       discover_local_ai,
       discover_supported_apps,
+      cloud_sources,
+      banking_sync,
       approved_folder_get,
       approved_folder_set,
       approved_folder_clear
