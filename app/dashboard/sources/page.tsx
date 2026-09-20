@@ -37,7 +37,7 @@ const providers = [
   { key:'basecamp', name:'Basecamp', group:'Project management', description:'Connects project communication and todos to revenue-recovery signals.', note:'OAuth work-management connector' },
 
   // Banking, payments, accounting & commerce
-  { key:'open_banking', name:'Bank accounts (Open Banking)', group:'Banking', description:'Reads approved account balances and transactions so CashPatch can match expected money with what actually arrived or left the account.', note:'PSD2/Open Banking · account information only' },
+  { key:'open_banking', name:'Bank accounts (Open Banking)', group:'Banking', description:'Reads approved account balances and transactions so CashPatch can match expected money with what actually arrived or left the account.', note:'PSD2/Open Banking · account information only', href:'/dashboard/sources/banking' },
   { key:'stripe', name:'Stripe', group:'Payments', description:'Watches subscriptions, invoices, failed payments and customers for revenue at risk.', note:'API + webhook connector' },
   { key:'paypal', name:'PayPal', group:'Payments', description:'Monitors transactions, disputes and payment state for recoverable cash.', note:'OAuth / API connector' },
   { key:'quickbooks', name:'QuickBooks', group:'Accounting', description:'Surfaces overdue invoices and customer balances automatically.', note:'OAuth accounting connector' },
@@ -136,7 +136,7 @@ export default async function SourcesPage() {
               <small>{live ? connected?.display_name ?? 'Connected' : provider.note}</small>
               {live
                 ? <button className="source-button secondary" type="button">Manage</button>
-                : <a className="source-button" href={`/api/sources/${provider.key}/connect`}>Connect</a>}
+                : <a className="source-button" href={provider.href ?? `/api/sources/${provider.key}/connect`}>Connect</a>}
             </div>
           </article>
         })}
