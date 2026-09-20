@@ -358,10 +358,31 @@ async fn entitlement_check(app: tauri::AppHandle) -> Result<EntitlementPublic, S
   })
 }
 
+
+#[tauri::command]
+fn approved_folder_get() -> Option<String> {
+  secret_get("approved-folder")
+}
+
+#[tauri::command]
+fn approved_folder_set(path: String) -> Result<(), String> {
+  let trimmed = path.trim();
+  if trimmed.is_empty() {
+    return Err("Folder path cannot be empty".to_string());
+  }
+  secret_set("approved-folder", trimmed)
+}
+
+#[tauri::command]
+fn approved_folder_clear() {
+  secret_delete("approved-folder");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_notification::init())
+    .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .setup(|app| {
@@ -409,7 +430,10 @@ pub fn run() {
       pair_consume,
       entitlement_check,
       discover_local_ai,
-      discover_supported_apps
+      discover_supported_apps,
+      approved_folder_get,
+      approved_folder_set,
+      approved_folder_clear
     ])
     .run(tauri::generate_context!())
     .expect("error while running CashPatch");
