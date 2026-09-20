@@ -18,12 +18,14 @@ export async function GET(request: Request) {
   }
 
   const admin = createAdminClient()
-  const { data: connection } = await admin
-    .schema('private')
-    .from('banking_connections')
-    .select('source_connection_id,requisition_id,callback_secret_hash')
-    .eq('source_connection_id', sourceId)
-    .maybeSingle()
+  const { data: privateRows, error: privateReadError } = await admin.rpc('banking_connection_get', {
+    p_source_connection_id: sourceId,
+  })
+  if (privateReadError) {
+    console.error('bank callback private lookup failed', privateReadError)
+    return NextResponse.redirect(new URL('/dashboard/sources?banking=error', request.url))
+  }
+  const connection = Array.isArray(privateRows) ? privateRows[0] : null
 
   if (!connection?.callback_secret_hash) {
     return NextResponse.redirect(new URL('/dashboard/sources?banking=invalid', request.url))
@@ -42,25 +44,21 @@ export async function GET(request: Request) {
       : requisition.status?.short ?? requisition.status?.long ?? ''
 
     if (status !== 'LN') {
-      await admin
-        .schema('private')
-        .from('banking_connections')
-        .update({ consent_status: status === 'EX' ? 'expired' : 'error', updated_at: new Date().toISOString() })
-        .eq('source_connection_id', sourceId)
+      await admin.rpc('banking_connection_set_status', {
+        p_source_connection_id: sourceId,
+        p_status: status === 'EX' ? 'expired' : 'error',
+        p_clear_callback: false,
+      })
 
       return NextResponse.redirect(new URL('/dashboard/sources?banking=not_linked', request.url))
     }
 
     await Promise.all([
-      admin
-        .schema('private')
-        .from('banking_connections')
-        .update({
-          consent_status: 'linked',
-          callback_secret_hash: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('source_connection_id', sourceId),
+      admin.rpc('banking_connection_set_status', {
+        p_source_connection_id: sourceId,
+        p_status: 'linked',
+        p_clear_callback: true,
+      }),
       admin
         .from('source_connections')
         .update({
