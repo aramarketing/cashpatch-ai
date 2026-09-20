@@ -102,6 +102,134 @@ struct EntitlementPublic {
   plan: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiRuntime {
+  key: String,
+  name: String,
+  endpoint: String,
+  available: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectedSource {
+  key: String,
+  name: String,
+  kind: String,
+  installed: bool,
+  permission_hint: String,
+}
+
+fn path_exists(path: &str) -> bool {
+  std::path::Path::new(path).exists()
+}
+
+#[tauri::command]
+async fn discover_local_ai() -> Result<Vec<LocalAiRuntime>, String> {
+  let client = reqwest::Client::builder()
+    .timeout(std::time::Duration::from_millis(700))
+    .build()
+    .map_err(|e| e.to_string())?;
+
+  let mut runtimes = Vec::new();
+
+  let ollama = client
+    .get("http://127.0.0.1:11434/api/tags")
+    .send()
+    .await
+    .map(|r| r.status().is_success())
+    .unwrap_or(false);
+
+  runtimes.push(LocalAiRuntime {
+    key: "ollama".to_string(),
+    name: "Ollama".to_string(),
+    endpoint: "http://127.0.0.1:11434".to_string(),
+    available: ollama,
+  });
+
+  let lm_studio = client
+    .get("http://127.0.0.1:1234/v1/models")
+    .send()
+    .await
+    .map(|r| r.status().is_success())
+    .unwrap_or(false);
+
+  runtimes.push(LocalAiRuntime {
+    key: "lm-studio".to_string(),
+    name: "LM Studio".to_string(),
+    endpoint: "http://127.0.0.1:1234".to_string(),
+    available: lm_studio,
+  });
+
+  Ok(runtimes)
+}
+
+#[tauri::command]
+fn discover_supported_apps() -> Result<Vec<DetectedSource>, String> {
+  let mut sources = Vec::new();
+
+  #[cfg(target_os = "macos")]
+  {
+    let candidates = [
+      ("chrome", "Google Chrome", "browser", "/Applications/Google Chrome.app", "Browser observer can be installed with explicit site permissions."),
+      ("outlook", "Microsoft Outlook", "email", "/Applications/Microsoft Outlook.app", "Connect Microsoft 365 with read-only mail permissions."),
+      ("slack", "Slack", "communication", "/Applications/Slack.app", "Connect approved Slack workspaces with read-only scopes."),
+      ("teams", "Microsoft Teams", "communication", "/Applications/Microsoft Teams.app", "Connect Microsoft Teams with read-only permissions."),
+      ("notion", "Notion", "project_management", "/Applications/Notion.app", "Connect approved Notion workspaces with read-only permissions."),
+    ];
+
+    for (key, name, kind, path, hint) in candidates {
+      sources.push(DetectedSource {
+        key: key.to_string(),
+        name: name.to_string(),
+        kind: kind.to_string(),
+        installed: path_exists(path),
+        permission_hint: hint.to_string(),
+      });
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+    let program_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
+
+    let candidates = vec![
+      ("chrome", "Google Chrome", "browser", vec![
+        format!(r"{}\Google\Chrome\Application\chrome.exe", program_files),
+        format!(r"{}\Google\Chrome\Application\chrome.exe", program_files_x86)
+      ], "Browser observer can be installed with explicit site permissions."),
+      ("outlook", "Microsoft Outlook", "email", vec![
+        format!(r"{}\Microsoft Office\root\Office16\OUTLOOK.EXE", program_files),
+        format!(r"{}\Microsoft Office\root\Office16\OUTLOOK.EXE", program_files_x86)
+      ], "Connect Microsoft 365 with read-only mail permissions."),
+      ("slack", "Slack", "communication", vec![
+        format!(r"{}\slack\slack.exe", local)
+      ], "Connect approved Slack workspaces with read-only scopes."),
+      ("teams", "Microsoft Teams", "communication", vec![
+        format!(r"{}\Microsoft\WindowsApps\ms-teams.exe", local)
+      ], "Connect Microsoft Teams with read-only permissions."),
+      ("notion", "Notion", "project_management", vec![
+        format!(r"{}\Programs\Notion\Notion.exe", local)
+      ], "Connect approved Notion workspaces with read-only permissions."),
+    ];
+
+    for (key, name, kind, paths, hint) in candidates {
+      sources.push(DetectedSource {
+        key: key.to_string(),
+        name: name.to_string(),
+        kind: kind.to_string(),
+        installed: paths.iter().any(|p| path_exists(p)),
+        permission_hint: hint.to_string(),
+      });
+    }
+  }
+
+  Ok(sources)
+}
+
 #[tauri::command]
 async fn pair_start(app: tauri::AppHandle) -> Result<PairStartPublic, String> {
   let device_id = get_or_create_device_public_id()?;
@@ -244,7 +372,9 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       pair_start,
       pair_consume,
-      entitlement_check
+      entitlement_check,
+      discover_local_ai,
+      discover_supported_apps
     ])
     .run(tauri::generate_context!())
     .expect("error while running CashPatch");
