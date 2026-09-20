@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check } from '@tauri-apps/plugin-updater'
+import { notifyFinding } from './notifications'
 
 type PairStart = {
   pairingCode: string
@@ -211,6 +212,7 @@ export default function App() {
           <p className="eyebrow">UPDATES</p>
           <h3>Signed update channel</h3>
           <p>Update infrastructure is wired; public signed desktop releases are the next release step.</p>
+          <button className="secondary" onClick={() => notifyFinding('CashPatch alert test', 'Native notifications are ready. Real findings will appear here automatically.')}>Test desktop alert</button>
         </article>
       </section>
     </main>
