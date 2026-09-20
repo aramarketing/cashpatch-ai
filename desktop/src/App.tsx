@@ -55,6 +55,7 @@ const navigation: Array<[Section, string]> = [
 ]
 
 const cloudSources = [
+  { name: 'Bank accounts', kind: 'Banking', detail: 'Balances + transactions only · never payment initiation' },
   { name: 'Microsoft Outlook', kind: 'Email', detail: 'Read-only Mail.Read permission' },
   { name: 'Gmail', kind: 'Email', detail: 'Read-only mailbox permission' },
   { name: 'Stripe', kind: 'Payments', detail: 'Restricted read-only account access' },
@@ -302,7 +303,7 @@ export default function App() {
         <p className="muted">Each permission must be explicitly approved and remain read-only.</p>
         <div className="permission-list">
           <article>
-            <div><b>Business accounts</b><small>Gmail, Outlook, CRM, payments and project tools</small></div>
+            <div><b>Business accounts</b><small>Bank accounts, Gmail, Outlook, CRM, payments and project tools</small></div>
             <button onClick={() => openUrl(`${PORTAL}/dashboard/sources`)}>Open connection center</button>
           </article>
           <article>
