@@ -11,6 +11,10 @@ on:
       - "desktop/**"
       - ".github/workflows/desktop-ci.yml"
 
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     strategy:
