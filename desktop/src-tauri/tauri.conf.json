@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CashPatch",
+  "version": "0.1.0",
+  "identifier": "com.cashpatch.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CashPatch",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https://cashpatch-ai.vercel.app; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "category": "Finance",
+    "shortDescription": "Local read-only business watchdog"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://cashpatch-ai.vercel.app/api/desktop/update/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "pubkey": "UPDATER_PUBLIC_KEY_PENDING_RELEASE_SIGNING"
+    }
+  }
+}
