@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { enable, isEnabled } from '@tauri-apps/plugin-autostart'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check } from '@tauri-apps/plugin-updater'
 import { notifyFinding } from './notifications'
@@ -38,18 +39,43 @@ type DetectedSource = {
 }
 
 type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
+type Section = 'watchtower' | 'findings' | 'sources' | 'permissions' | 'ai' | 'activity' | 'subscription' | 'settings'
 
 const PORTAL = 'https://cashpatch-ai.vercel.app'
 
+const navigation: Array<[Section, string]> = [
+  ['watchtower', 'Watchtower'],
+  ['findings', 'Findings'],
+  ['sources', 'Sources'],
+  ['permissions', 'Permissions'],
+  ['ai', 'Local AI'],
+  ['activity', 'Activity'],
+  ['subscription', 'Subscription'],
+  ['settings', 'Settings'],
+]
+
+const cloudSources = [
+  { name: 'Microsoft Outlook', kind: 'Email', detail: 'Read-only Mail.Read permission' },
+  { name: 'Gmail', kind: 'Email', detail: 'Read-only mailbox permission' },
+  { name: 'Stripe', kind: 'Payments', detail: 'Restricted read-only account access' },
+  { name: 'HubSpot', kind: 'CRM', detail: 'Read-only CRM scopes' },
+  { name: 'ClickUp', kind: 'Project management', detail: 'Read-only workspace access' },
+]
+
 export default function App() {
   const [phase, setPhase] = useState<Phase>('booting')
+  const [section, setSection] = useState<Section>('watchtower')
   const [pair, setPair] = useState<PairStart | null>(null)
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null)
   const [message, setMessage] = useState('Starting secure local watchdog…')
   const [autostart, setAutostart] = useState(false)
   const [localAi, setLocalAi] = useState<LocalAiRuntime[]>([])
   const [detectedSources, setDetectedSources] = useState<DetectedSource[]>([])
+  const [approvedFolder, setApprovedFolder] = useState<string | null>(null)
   const pollRef = useRef<number | null>(null)
+
+  const availableAi = useMemo(() => localAi.filter(runtime => runtime.available), [localAi])
+  const installedApps = useMemo(() => detectedSources.filter(source => source.installed), [detectedSources])
 
   const refreshEntitlement = async () => {
     try {
@@ -64,6 +90,17 @@ export default function App() {
     }
   }
 
+  const refreshLocalDiscovery = async () => {
+    const [ai, sources, folder] = await Promise.all([
+      invoke<LocalAiRuntime[]>('discover_local_ai').catch(() => []),
+      invoke<DetectedSource[]>('discover_supported_apps').catch(() => []),
+      invoke<string | null>('approved_folder_get').catch(() => null),
+    ])
+    setLocalAi(ai)
+    setDetectedSources(sources)
+    setApprovedFolder(folder)
+  }
+
   useEffect(() => {
     refreshEntitlement()
     isEnabled().then(setAutostart).catch(() => {})
@@ -72,12 +109,13 @@ export default function App() {
 
   useEffect(() => {
     if (phase !== 'ready') return
-
-    invoke<LocalAiRuntime[]>('discover_local_ai').then(setLocalAi).catch(() => setLocalAi([]))
-    invoke<DetectedSource[]>('discover_supported_apps').then(setDetectedSources).catch(() => setDetectedSources([]))
-
-    const id = window.setInterval(refreshEntitlement, 5 * 60 * 1000)
-    return () => window.clearInterval(id)
+    refreshLocalDiscovery()
+    const entitlementTimer = window.setInterval(refreshEntitlement, 5 * 60 * 1000)
+    const discoveryTimer = window.setInterval(refreshLocalDiscovery, 15 * 60 * 1000)
+    return () => {
+      window.clearInterval(entitlementTimer)
+      window.clearInterval(discoveryTimer)
+    }
   }, [phase])
 
   useEffect(() => () => {
@@ -112,6 +150,23 @@ export default function App() {
   const enableAutostart = async () => {
     await enable()
     setAutostart(await isEnabled())
+  }
+
+  const chooseFolder = async () => {
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+      title: 'Choose a folder CashPatch may review',
+    })
+    if (typeof selected === 'string') {
+      await invoke('approved_folder_set', { path: selected })
+      setApprovedFolder(selected)
+    }
+  }
+
+  const clearFolder = async () => {
+    await invoke('approved_folder_clear')
+    setApprovedFolder(null)
   }
 
   if (phase === 'booting') {
@@ -159,23 +214,25 @@ export default function App() {
     </div>
   }
 
+  const title = navigation.find(([key]) => key === section)?.[1] ?? 'CashPatch'
+
   return <div className="app">
     <aside>
       <div className="brand"><span>CP</span><strong>CashPatch</strong></div>
       <nav>
-        <button className="active">Watchtower</button>
-        <button>Findings</button>
-        <button>Sources</button>
-        <button>Permissions</button>
-        <button>Local AI</button>
-        <button>Activity</button>
-        <button>Settings</button>
+        {navigation.map(([key, label]) => (
+          <button key={key} className={section === key ? 'active' : ''} onClick={() => setSection(key)}>{label}</button>
+        ))}
       </nav>
       <div className="review">REVIEW ONLY</div>
     </aside>
+
     <main>
       <header>
-        <div><p className="eyebrow">LOCAL BUSINESS WATCHDOG</p><h1>Everything looks quiet.</h1></div>
+        <div>
+          <p className="eyebrow">LOCAL BUSINESS WATCHDOG</p>
+          <h1>{section === 'watchtower' ? 'Everything that deserves attention.' : title}</h1>
+        </div>
         <div className="live"><i /> Monitoring armed</div>
       </header>
 
@@ -185,36 +242,135 @@ export default function App() {
         <div><strong>Subscription verified.</strong><span>{entitlement?.plan ?? 'paid'} · {entitlement?.billingStatus}</span></div>
       </section>
 
-      <section className="grid">
+      {section === 'watchtower' && <section className="grid">
         <article className="hero-panel">
           <p className="eyebrow">WATCHTOWER</p>
           <h2>No urgent findings yet.</h2>
-          <p>Connect your first read-only source. CashPatch will correlate approved signals locally and notify you only when something deserves attention.</p>
-          <button onClick={() => openUrl(`${PORTAL}/dashboard/sources`)}>Connect sources</button>
+          <p>CashPatch is ready to correlate approved signals locally and notify you only when something deserves attention.</p>
+          <button onClick={() => setSection('permissions')}>Review permissions</button>
         </article>
         <article>
           <p className="eyebrow">LOCAL AI</p>
-          <h3>{localAi.filter(runtime => runtime.available).length > 0 ? 'Local runtime detected' : 'No local runtime yet'}</h3>
-          <p>{localAi.filter(runtime => runtime.available).map(runtime => runtime.name).join(', ') || 'CashPatch checked Ollama and LM Studio locally. Setup guidance comes next.'}</p>
-        </article>
-        <article>
-          <p className="eyebrow">AUTOSTART</p>
-          <h3>{autostart ? 'Starts with your computer' : 'Manual start'}</h3>
-          {!autostart && <button className="secondary" onClick={enableAutostart}>Enable autostart</button>}
+          <h3>{availableAi.length ? 'Local runtime detected' : 'Local AI setup needed'}</h3>
+          <p>{availableAi.map(runtime => runtime.name).join(', ') || 'Ollama and LM Studio were checked locally.'}</p>
+          <button className="secondary" onClick={() => setSection('ai')}>Open Local AI</button>
         </article>
         <article>
           <p className="eyebrow">SOURCES DISCOVERED</p>
-          <h3>{detectedSources.filter(source => source.installed).length} supported apps found</h3>
-          <p>{detectedSources.filter(source => source.installed).map(source => source.name).join(', ') || 'CashPatch did not find a supported local app yet.'}</p>
-          {detectedSources.some(source => source.installed) && <button className="secondary" onClick={() => openUrl(`${PORTAL}/dashboard/sources`)}>Review permissions</button>}
+          <h3>{installedApps.length} supported apps found</h3>
+          <p>{installedApps.map(source => source.name).join(', ') || 'No supported local app detected yet.'}</p>
+          <button className="secondary" onClick={() => setSection('sources')}>Open sources</button>
         </article>
         <article>
-          <p className="eyebrow">UPDATES</p>
-          <h3>Signed update channel</h3>
-          <p>Update infrastructure is wired; public signed desktop releases are the next release step.</p>
-          <button className="secondary" onClick={() => notifyFinding('CashPatch alert test', 'Native notifications are ready. Real findings will appear here automatically.')}>Test desktop alert</button>
+          <p className="eyebrow">LOCAL FOLDER</p>
+          <h3>{approvedFolder ? '1 folder approved' : 'No folder access'}</h3>
+          <p>{approvedFolder ?? 'CashPatch reads no local folder until you explicitly choose one.'}</p>
+          <button className="secondary" onClick={chooseFolder}>{approvedFolder ? 'Change folder' : 'Choose folder'}</button>
         </article>
-      </section>
+        <article>
+          <p className="eyebrow">ALERTS</p>
+          <h3>Native notifications ready</h3>
+          <p>Important findings can appear as desktop notifications without changing the source system.</p>
+          <button className="secondary" onClick={() => notifyFinding('CashPatch alert test', 'Native notifications are ready. Real findings will appear here automatically.')}>Test alert</button>
+        </article>
+      </section>}
+
+      {section === 'findings' && <section className="panel empty">
+        <div className="orb">0</div>
+        <h2>No findings yet.</h2>
+        <p>Findings will appear automatically after approved sources begin producing signals.</p>
+      </section>}
+
+      {section === 'sources' && <section className="source-grid">
+        {cloudSources.map(source => <article key={source.name} className="source-card">
+          <p className="eyebrow">{source.kind}</p>
+          <h3>{source.name}</h3>
+          <p>{source.detail}</p>
+          <button className="secondary" onClick={() => openUrl(`${PORTAL}/dashboard/sources`)}>Connect read-only</button>
+        </article>)}
+        {installedApps.map(source => <article key={source.key} className="source-card">
+          <p className="eyebrow">{source.kind}</p>
+          <h3>{source.name}</h3>
+          <p>{source.permissionHint}</p>
+          <button className="secondary" onClick={() => setSection('permissions')}>Review permission</button>
+        </article>)}
+      </section>}
+
+      {section === 'permissions' && <section className="panel">
+        <p className="eyebrow">PERMISSION CENTER</p>
+        <h2>CashPatch asks before it reads.</h2>
+        <p className="muted">Each permission must be explicitly approved and remain read-only.</p>
+        <div className="permission-list">
+          <article>
+            <div><b>Business accounts</b><small>Gmail, Outlook, CRM, payments and project tools</small></div>
+            <button onClick={() => openUrl(`${PORTAL}/dashboard/sources`)}>Open connection center</button>
+          </article>
+          <article>
+            <div><b>Local folder</b><small>{approvedFolder ?? 'No folder approved'}</small></div>
+            <div className="button-row">
+              <button onClick={chooseFolder}>{approvedFolder ? 'Change' : 'Choose folder'}</button>
+              {approvedFolder && <button className="secondary" onClick={clearFolder}>Remove access</button>}
+            </div>
+          </article>
+          <article>
+            <div><b>Installed apps</b><small>{installedApps.length ? installedApps.map(source => source.name).join(', ') : 'Nothing detected'}</small></div>
+            <button onClick={refreshLocalDiscovery}>Scan again</button>
+          </article>
+        </div>
+      </section>}
+
+      {section === 'ai' && <section className="panel">
+        <p className="eyebrow">LOCAL AI</p>
+        <h2>Analysis stays on this computer.</h2>
+        <p className="muted">CashPatch never gives the local model write tools.</p>
+        <div className="permission-list">
+          {localAi.map(runtime => <article key={runtime.key}>
+            <div><b>{runtime.name}</b><small>{runtime.endpoint}</small></div>
+            <span className={runtime.available ? 'ok-badge' : 'off-badge'}>{runtime.available ? 'Ready' : 'Not detected'}</span>
+          </article>)}
+          {!availableAi.length && <article>
+            <div><b>Need a local model?</b><small>Both options are free to install.</small></div>
+            <div className="button-row">
+              <button onClick={() => openUrl('https://ollama.com/download')}>Ollama</button>
+              <button className="secondary" onClick={() => openUrl('https://lmstudio.ai/')}>LM Studio</button>
+            </div>
+          </article>}
+        </div>
+      </section>}
+
+      {section === 'activity' && <section className="panel empty">
+        <div className="orb">✓</div>
+        <h2>No review activity yet.</h2>
+        <p>The audit trail will record reads, syncs and analyses — never external changes.</p>
+      </section>}
+
+      {section === 'subscription' && <section className="panel">
+        <p className="eyebrow">ENTITLEMENT</p>
+        <h2>Subscription active.</h2>
+        <p className="muted">Monitoring only runs while the server confirms a valid paid workspace.</p>
+        <div className="status-line"><span>Status</span><strong>{entitlement?.billingStatus}</strong></div>
+        <div className="status-line"><span>Plan</span><strong>{entitlement?.plan}</strong></div>
+        <button onClick={() => openUrl(`${PORTAL}/dashboard`)}>Manage subscription</button>
+      </section>}
+
+      {section === 'settings' && <section className="panel">
+        <p className="eyebrow">SETTINGS</p>
+        <h2>Desktop behavior.</h2>
+        <div className="permission-list">
+          <article>
+            <div><b>Start CashPatch with this computer</b><small>{autostart ? 'Enabled' : 'Disabled'}</small></div>
+            {!autostart && <button onClick={enableAutostart}>Enable</button>}
+          </article>
+          <article>
+            <div><b>Desktop notification</b><small>Test the native alert channel.</small></div>
+            <button onClick={() => notifyFinding('CashPatch alert test', 'Desktop notifications are working.')}>Test alert</button>
+          </article>
+          <article>
+            <div><b>Updates</b><small>CashPatch checks its signed update channel at startup.</small></div>
+            <button className="secondary" onClick={() => check()}>Check now</button>
+          </article>
+        </div>
+      </section>}
     </main>
   </div>
 }
