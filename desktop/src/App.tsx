@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -53,13 +54,70 @@ type CloudSource = {
   updatedAt?: string | null
 }
 
+type QuickScanPlan = {
+  roots: string[]
+  filesSeen: number
+  directoriesSeen: number
+  bytesSeen: number
+  permissionDenied: number
+  truncated: boolean
+  estimatedFullSeconds: number
+  estimatedFullLabel: string
+}
+
+type LocalFinding = {
+  id: string
+  category: string
+  severity: string
+  title: string
+  summary: string
+  evidence: string
+  remediation: string
+}
+
+type ScanSnapshot = {
+  scanId?: string | null
+  mode: string
+  phase: string
+  currentItem?: string | null
+  filesSeen: number
+  directoriesSeen: number
+  bytesSeen: number
+  permissionDenied: number
+  findingsCount: number
+  progressPercent: number
+  elapsedSeconds: number
+  etaSeconds?: number | null
+  paused: boolean
+  cancelled: boolean
+  quickPlan?: QuickScanPlan | null
+  findings: LocalFinding[]
+  error?: string | null
+}
+
 type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
-type Section = 'watchtower' | 'findings' | 'sources' | 'permissions' | 'ai' | 'activity' | 'subscription' | 'settings'
+type Section = 'watchtower' | 'scan' | 'findings' | 'sources' | 'permissions' | 'ai' | 'activity' | 'subscription' | 'settings'
 
 const PORTAL = 'https://cashpatch-ai.vercel.app'
 
+const formatBytes = (value: number) => {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`
+  return `${(value / 1024 ** 3).toFixed(1)} GB`
+}
+
+const formatEta = (seconds?: number | null) => {
+  if (seconds == null) return 'Estimating…'
+  if (seconds < 60) return `${Math.max(1, seconds)} sec`
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)} min`
+  return `${Math.ceil(seconds / 3600)} h`
+}
+
+
 const navigation: Array<[Section, string]> = [
   ['watchtower', 'Watchtower'],
+  ['scan', 'Scan'],
   ['findings', 'Findings'],
   ['sources', 'Sources'],
   ['permissions', 'Permissions'],
@@ -91,6 +149,9 @@ export default function App() {
   const [connectedSources, setConnectedSources] = useState<CloudSource[]>([])
   const [bankFindings, setBankFindings] = useState<BankingFinding[]>([])
   const [lastBankScan, setLastBankScan] = useState<Date | null>(null)
+  const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
+  const [quickConsent, setQuickConsent] = useState(false)
+  const [fullConsent, setFullConsent] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   const availableAi = useMemo(() => localAi.filter(runtime => runtime.available), [localAi])
@@ -162,6 +223,27 @@ export default function App() {
 
     localStorage.setItem('cashpatch-seen-bank-findings-v1', JSON.stringify([...seen].slice(-500)))
   }
+
+  useEffect(() => {
+    let disposed = false
+    let stopListening: (() => void) | undefined
+
+    invoke<ScanSnapshot>('scan_status').then(snapshot => {
+      if (!disposed) setScanSnapshot(snapshot)
+    }).catch(() => {})
+
+    listen<ScanSnapshot>('scan-progress', event => {
+      if (!disposed) setScanSnapshot(event.payload)
+    }).then(unlisten => {
+      if (disposed) unlisten()
+      else stopListening = unlisten
+    }).catch(() => {})
+
+    return () => {
+      disposed = true
+      stopListening?.()
+    }
+  }, [])
 
   useEffect(() => {
     refreshEntitlement()
@@ -266,6 +348,28 @@ export default function App() {
   const clearFolder = async () => {
     await invoke('approved_folder_clear')
     setApprovedFolder(null)
+  }
+
+  const startQuickScan = async () => {
+    if (!quickConsent) return
+    setSection('scan')
+    const extraRoots = approvedFolder ? [approvedFolder] : []
+    await invoke<string>('quick_scan_start', { consent: true, extraRoots })
+  }
+
+  const startFullScan = async () => {
+    if (!fullConsent || !scanSnapshot?.scanId) return
+    await invoke('full_scan_start', { scanId: scanSnapshot.scanId, consent: true })
+  }
+
+  const pauseOrResumeScan = async () => {
+    if (!scanSnapshot) return
+    if (scanSnapshot.paused) await invoke('scan_resume')
+    else await invoke('scan_pause')
+  }
+
+  const cancelScan = async () => {
+    await invoke('scan_cancel')
   }
 
   if (phase === 'booting') {
@@ -379,6 +483,91 @@ export default function App() {
           <p>Important findings can appear as desktop notifications without changing the source system.</p>
           <button className="secondary" onClick={() => notifyFinding('CashPatch alert test', 'Native notifications are ready. Real findings will appear here automatically.')}>Test alert</button>
         </article>
+      </section>}
+
+      {section === 'scan' && <section className="panel">
+        <p className="eyebrow">LOCAL REVIEW-ONLY SCAN</p>
+        <h2>Scan deeply. Change nothing.</h2>
+        <p className="muted">CashPatch scans only after your explicit consent. Quick Scan inventories scope and estimates the Full Scan. Full Scan requires a second confirmation.</p>
+
+        {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled') && <>
+          <div className="permission-list">
+            <article>
+              <div>
+                <b>Quick Scan consent</b>
+                <small>Metadata only: accessible files, folders, installed application locations and permission boundaries. No background scan.</small>
+              </div>
+              <label><input type="checkbox" checked={quickConsent} onChange={e => setQuickConsent(e.target.checked)} /> I consent to a local read-only Quick Scan</label>
+            </article>
+          </div>
+          <button disabled={!quickConsent} onClick={startQuickScan}>Start Quick Scan</button>
+        </>}
+
+        {scanSnapshot?.phase === 'quick_scanning' && <>
+          <div className="status-line"><span>Phase</span><strong>Quick Scan</strong></div>
+          <div className="status-line"><span>Files</span><strong>{scanSnapshot.filesSeen.toLocaleString()}</strong></div>
+          <div className="status-line"><span>Data mapped</span><strong>{formatBytes(scanSnapshot.bytesSeen)}</strong></div>
+          <div className="status-line"><span>Permission limits</span><strong>{scanSnapshot.permissionDenied}</strong></div>
+          <p className="status">{scanSnapshot.currentItem ?? 'Mapping local scope…'}</p>
+          <div className="button-row">
+            <button className="secondary" onClick={pauseOrResumeScan}>{scanSnapshot.paused ? 'Resume' : 'Pause'}</button>
+            <button className="secondary" onClick={cancelScan}>Cancel</button>
+          </div>
+        </>}
+
+        {scanSnapshot?.phase === 'awaiting_full_confirmation' && scanSnapshot.quickPlan && <>
+          <div className="trust">
+            <div><strong>{scanSnapshot.quickPlan.filesSeen.toLocaleString()}</strong><span>files mapped</span></div>
+            <div><strong>{formatBytes(scanSnapshot.quickPlan.bytesSeen)}</strong><span>reachable data</span></div>
+            <div><strong>{scanSnapshot.quickPlan.estimatedFullLabel}</strong><span>estimated Full Scan</span></div>
+          </div>
+          <p>{scanSnapshot.quickPlan.permissionDenied
+            ? `${scanSnapshot.quickPlan.permissionDenied} locations could not be read with current OS permissions. CashPatch will not bypass them.`
+            : 'No permission boundary was encountered in the mapped scope.'}</p>
+          {scanSnapshot.quickPlan.truncated && <p className="status">Quick Scan reached its safety cap. The Full Scan estimate is conservative.</p>}
+          <div className="permission-list">
+            <article>
+              <div>
+                <b>Full Scan confirmation</b>
+                <small>CashPatch will locally hash and inspect supported business files for duplicates, exposed-secret file risks and efficiency issues. It will never edit or delete anything.</small>
+              </div>
+              <label><input type="checkbox" checked={fullConsent} onChange={e => setFullConsent(e.target.checked)} /> I confirm the local read-only Full Scan</label>
+            </article>
+          </div>
+          <button disabled={!fullConsent} onClick={startFullScan}>Start Full Scan</button>
+        </>}
+
+        {scanSnapshot?.phase === 'full_scanning' && <>
+          <div className="status-line"><span>Progress</span><strong>{scanSnapshot.progressPercent.toFixed(1)}%</strong></div>
+          <progress max="100" value={scanSnapshot.progressPercent} style={{ width: '100%' }} />
+          <div className="status-line"><span>Files scanned</span><strong>{scanSnapshot.filesSeen.toLocaleString()}</strong></div>
+          <div className="status-line"><span>Findings</span><strong>{scanSnapshot.findingsCount}</strong></div>
+          <div className="status-line"><span>ETA</span><strong>{formatEta(scanSnapshot.etaSeconds)}</strong></div>
+          <div className="status-line"><span>Elapsed</span><strong>{formatEta(scanSnapshot.elapsedSeconds)}</strong></div>
+          <p className="status">{scanSnapshot.currentItem ?? 'Scanning…'}</p>
+          <div className="button-row">
+            <button className="secondary" onClick={pauseOrResumeScan}>{scanSnapshot.paused ? 'Resume' : 'Pause'}</button>
+            <button className="secondary" onClick={cancelScan}>Cancel</button>
+          </div>
+        </>}
+
+        {scanSnapshot?.phase === 'completed' && <>
+          <div className="trust">
+            <div><strong>{scanSnapshot.filesSeen.toLocaleString()}</strong><span>files reviewed</span></div>
+            <div><strong>{scanSnapshot.findingsCount}</strong><span>findings</span></div>
+            <div><strong>{formatEta(scanSnapshot.elapsedSeconds)}</strong><span>scan duration</span></div>
+          </div>
+          <div className="local-findings">
+            {scanSnapshot.findings.map(finding => <article className="local-finding" key={finding.id}>
+              <div className="local-finding-top"><span>{finding.category}</span><strong>{finding.severity}</strong></div>
+              <h3>{finding.title}</h3>
+              <p>{finding.summary}</p>
+              <small>{finding.evidence}</small>
+              <div className="local-next"><span>HOW TO FIX</span><b>{finding.remediation}</b></div>
+            </article>)}
+            {!scanSnapshot.findings.length && <article className="local-finding"><h3>No local findings in this pass.</h3><p>CashPatch changed nothing.</p></article>}
+          </div>
+        </>}
       </section>}
 
       {section === 'findings' && (bankFindings.length
