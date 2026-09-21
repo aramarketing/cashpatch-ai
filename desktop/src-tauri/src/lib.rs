@@ -1,3 +1,4 @@
+mod egress;
 mod scan;
 use keyring::Entry;
 use reqwest::StatusCode;
@@ -242,8 +243,10 @@ async fn discover_local_ai() -> Result<Vec<LocalAiRuntime>, String> {
 
   let mut runtimes = Vec::new();
 
+  let ollama_url = "http://127.0.0.1:11434/api/tags";
+  egress::allow_local_ai(ollama_url)?;
   let ollama = client
-    .get("http://127.0.0.1:11434/api/tags")
+    .get(ollama_url)
     .send()
     .await
     .map(|r| r.status().is_success())
@@ -256,8 +259,10 @@ async fn discover_local_ai() -> Result<Vec<LocalAiRuntime>, String> {
     available: ollama,
   });
 
+  let lm_studio_url = "http://127.0.0.1:1234/v1/models";
+  egress::allow_local_ai(lm_studio_url)?;
   let lm_studio = client
-    .get("http://127.0.0.1:1234/v1/models")
+    .get(lm_studio_url)
     .send()
     .await
     .map(|r| r.status().is_success())
@@ -355,8 +360,10 @@ async fn pair_start(app: tauri::AppHandle) -> Result<PairStartPublic, String> {
     public_key: String::new(),
   };
 
+  let endpoint = format!("{}/api/desktop/pair/start", CLOUD_BASE);
+  egress::allow_account_control(&endpoint)?;
   let response = reqwest::Client::new()
-    .post(format!("{}/api/desktop/pair/start", CLOUD_BASE))
+    .post(endpoint)
     .json(&request)
     .send()
     .await
@@ -382,8 +389,10 @@ async fn pair_consume() -> Result<PairConsumePublic, String> {
   let code = secret_get("pairing-code").ok_or("No active pairing request")?;
   let secret = secret_get("pairing-secret").ok_or("No active pairing secret")?;
 
+  let endpoint = format!("{}/api/desktop/pair/consume", CLOUD_BASE);
+  egress::allow_account_control(&endpoint)?;
   let response = reqwest::Client::new()
-    .post(format!("{}/api/desktop/pair/consume", CLOUD_BASE))
+    .post(endpoint)
     .json(&serde_json::json!({
       "pairingCode": code,
       "pairingSecret": secret
@@ -431,8 +440,10 @@ async fn entitlement_check(app: tauri::AppHandle) -> Result<EntitlementPublic, S
     });
   };
 
+  let endpoint = format!("{}/api/desktop/entitlement", CLOUD_BASE);
+  egress::allow_account_control(&endpoint)?;
   let response = reqwest::Client::new()
-    .post(format!("{}/api/desktop/entitlement", CLOUD_BASE))
+    .post(endpoint)
     .json(&serde_json::json!({
       "deviceId": device_id,
       "deviceCredential": credential,
@@ -470,8 +481,10 @@ async fn cloud_sources(app: tauri::AppHandle) -> Result<Vec<CloudSource>, String
   let device_id = secret_get("cloud-device-id").ok_or("Device is not paired")?;
   let credential = secret_get("device-credential").ok_or("Device credential is missing")?;
 
+  let endpoint = format!("{}/api/desktop/sources", CLOUD_BASE);
+  egress::allow_account_control(&endpoint)?;
   let response = reqwest::Client::new()
-    .post(format!("{}/api/desktop/sources", CLOUD_BASE))
+    .post(endpoint)
     .json(&serde_json::json!({
       "deviceId": device_id,
       "deviceCredential": credential,
@@ -489,28 +502,9 @@ async fn cloud_sources(app: tauri::AppHandle) -> Result<Vec<CloudSource>, String
   Ok(result.sources)
 }
 
-#[tauri::command]
-async fn banking_sync(app: tauri::AppHandle, source_connection_id: String) -> Result<serde_json::Value, String> {
-  let device_id = secret_get("cloud-device-id").ok_or("Device is not paired")?;
-  let credential = secret_get("device-credential").ok_or("Device credential is missing")?;
-
-  let response = reqwest::Client::new()
-    .post(format!("{}/api/desktop/banking/sync", CLOUD_BASE))
-    .json(&serde_json::json!({
-      "deviceId": device_id,
-      "deviceCredential": credential,
-      "appVersion": app.package_info().version.to_string(),
-      "sourceConnectionId": source_connection_id
-    }))
-    .send()
-    .await
-    .map_err(|e| e.to_string())?;
-
-  if !response.status().is_success() {
-    return Err(format!("Bank sync returned {}", response.status()));
-  }
-
-  response.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+#[allow(dead_code)]
+async fn banking_sync_disabled() -> Result<serde_json::Value, String> {
+  Err("Desktop banking content sync is disabled until the local Account-Information-only connector is available".to_string())
 }
 
 #[tauri::command]
@@ -586,7 +580,6 @@ pub fn run() {
       discover_local_ai,
       discover_supported_apps,
       cloud_sources,
-      banking_sync,
       approved_folder_get,
       approved_folder_set,
       approved_folder_clear,
