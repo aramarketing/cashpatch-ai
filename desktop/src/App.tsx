@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check } from '@tauri-apps/plugin-updater'
 import { notifyFinding } from './notifications'
@@ -362,6 +362,17 @@ export default function App() {
     await invoke('scan_cancel')
   }
 
+  const exportScanReport = async (format: 'markdown' | 'json') => {
+    const extension = format === 'markdown' ? 'md' : 'json'
+    const path = await saveDialog({
+      title: 'Save CashPatch audit report',
+      defaultPath: `CashPatch-Audit-${new Date().toISOString().slice(0, 10)}.${extension}`,
+      filters: [{ name: format === 'markdown' ? 'Markdown' : 'JSON', extensions: [extension] }],
+    })
+    if (!path) return
+    await invoke('scan_export_report', { path, format })
+  }
+
   const refreshVault = async () => {
     const status = await invoke<VaultStatus>('vault_status')
     setVaultStatus(status)
@@ -662,6 +673,10 @@ export default function App() {
               <div className="local-next"><span>HOW TO FIX</span><b>{finding.remediation}</b></div>
             </article>)}
             {!scanSnapshot.findings.length && <article className="local-finding"><h3>No local findings in this pass.</h3><p>CashPatch changed nothing.</p></article>}
+          </div>
+          <div className="button-row">
+            <button onClick={() => exportScanReport('markdown')}>Save detailed report</button>
+            <button className="secondary" onClick={() => exportScanReport('json')}>Save AI-readable JSON</button>
           </div>
         </>}
       </section>}
