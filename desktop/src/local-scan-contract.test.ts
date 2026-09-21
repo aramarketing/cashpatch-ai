@@ -31,6 +31,16 @@ describe('local scan consent and privacy contracts', () => {
     expect(app).toContain('onClick={startQuickScan}')
   })
 
+  it('never starts content scans from a background timer', () => {
+    const app = readRepoFile('desktop/src/App.tsx')
+
+    expect(app).not.toContain('setInterval(refreshBusinessSources')
+    expect(app).not.toContain('setInterval(startQuickScan')
+    expect(app).not.toContain('setInterval(startFullScan')
+    expect(app).toContain('onClick={startQuickScan}')
+    expect(app).toContain('onClick={startFullScan}')
+  })
+
   it('does not expose the legacy cloud banking content sync command to the desktop UI', () => {
     const backend = readRepoFile('desktop/src-tauri/src/lib.rs')
     const app = readRepoFile('desktop/src/App.tsx')
