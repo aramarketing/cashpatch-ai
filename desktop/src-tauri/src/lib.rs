@@ -1,3 +1,4 @@
+mod scan;
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -588,7 +589,13 @@ pub fn run() {
       banking_sync,
       approved_folder_get,
       approved_folder_set,
-      approved_folder_clear
+      approved_folder_clear,
+      scan::quick_scan_start,
+      scan::full_scan_start,
+      scan::scan_status,
+      scan::scan_pause,
+      scan::scan_resume,
+      scan::scan_cancel
     ])
     .run(tauri::generate_context!())
     .expect("error while running CashPatch");
