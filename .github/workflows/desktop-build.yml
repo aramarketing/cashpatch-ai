@@ -40,7 +40,7 @@ jobs:
         working-directory: desktop
         run: npx tauri icon src-tauri/icons/icon.png
 
-      - name: Build unsigned test installer
+      - name: Build test installer
         working-directory: desktop
         run: npm run desktop:build
 
@@ -81,7 +81,29 @@ jobs:
           app_binary="$app_bundle/Contents/MacOS/$executable"
           test -x "$app_binary"
           file "$app_binary" | grep -q 'Mach-O'
-          echo "DMG smoke test passed: $app_bundle contains executable $executable"
+
+          echo "Verifying ad-hoc code signature"
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          signature_details="$(codesign -dv --verbose=4 "$app_bundle" 2>&1)"
+          printf '%s\n' "$signature_details"
+          printf '%s\n' "$signature_details" | grep -q 'Signature=adhoc'
+
+          echo "Launching packaged executable for a short runtime smoke test"
+          smoke_log="$(mktemp)"
+          "$app_binary" >"$smoke_log" 2>&1 &
+          app_pid=$!
+          sleep 5
+          if ! kill -0 "$app_pid" >/dev/null 2>&1; then
+            echo "Packaged CashPatch executable exited during smoke test" >&2
+            cat "$smoke_log" >&2 || true
+            wait "$app_pid" || true
+            exit 1
+          fi
+          kill "$app_pid" >/dev/null 2>&1 || true
+          wait "$app_pid" >/dev/null 2>&1 || true
+          rm -f "$smoke_log"
+
+          echo "DMG smoke test passed: signed app bundle contains a launchable executable"
 
       - name: Smoke-test Windows EXE installer
         if: runner.os == 'Windows'
