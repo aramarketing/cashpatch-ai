@@ -170,6 +170,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (phase === 'blocked') {
+      const blockedTimer = window.setInterval(refreshEntitlement, 10 * 1000)
+      return () => window.clearInterval(blockedTimer)
+    }
+
     if (phase !== 'ready') return
     refreshLocalDiscovery()
     refreshBusinessSources()
@@ -288,8 +293,11 @@ export default function App() {
       <h1>Active subscription required.</h1>
       <p>CashPatch is paired, but monitoring and local AI are disabled because the workspace is not currently paid and active.</p>
       <div className="status-line"><span>Billing</span><strong>{entitlement?.billingStatus ?? 'inactive'}</strong></div>
-      <button onClick={() => openUrl(`${PORTAL}/dashboard`)}>Open billing portal</button>
-      <small>Existing local findings remain visible. No background scan is running.</small>
+      <div className="button-row">
+        <button onClick={() => openUrl(`${PORTAL}/dashboard`)}>Open billing portal</button>
+        <button className="secondary" onClick={refreshEntitlement}>Check subscription now</button>
+      </div>
+      <small>CashPatch rechecks the server automatically every 10 seconds. Existing local findings remain visible. No background scan is running.</small>
     </div>
   }
 
