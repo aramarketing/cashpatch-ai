@@ -641,6 +641,7 @@ pub fn run() {
       scan::scan_pause,
       scan::scan_resume,
       scan::scan_cancel,
+      scan::scan_export_report,
       vault::vault_status,
       vault::vault_create,
       vault::vault_unlock,
