@@ -73,6 +73,22 @@ type LocalFinding = {
   remediation: string
 }
 
+type VaultStatus = {
+  exists: boolean
+  unlocked: boolean
+  autoLockSeconds: number
+}
+
+type VaultEntrySummary = {
+  id: string
+  label: string
+  username: string
+  url: string
+  notes: string
+  createdAtEpoch: number
+  updatedAtEpoch: number
+}
+
 type ScanSnapshot = {
   scanId?: string | null
   mode: string
@@ -94,7 +110,7 @@ type ScanSnapshot = {
 }
 
 type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
-type Section = 'watchtower' | 'scan' | 'findings' | 'sources' | 'permissions' | 'ai' | 'activity' | 'subscription' | 'settings'
+type Section = 'watchtower' | 'scan' | 'findings' | 'sources' | 'permissions' | 'ai' | 'vault' | 'activity' | 'subscription' | 'settings'
 
 const PORTAL = 'https://cashpatch-ai.vercel.app'
 
@@ -120,6 +136,7 @@ const navigation: Array<[Section, string]> = [
   ['sources', 'Sources'],
   ['permissions', 'Permissions'],
   ['ai', 'Local AI'],
+  ['vault', 'Password Vault'],
   ['activity', 'Activity'],
   ['subscription', 'Subscription'],
   ['settings', 'Settings'],
@@ -148,6 +165,16 @@ export default function App() {
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
   const [quickConsent, setQuickConsent] = useState(false)
   const [fullConsent, setFullConsent] = useState(false)
+  const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null)
+  const [vaultEntries, setVaultEntries] = useState<VaultEntrySummary[]>([])
+  const [vaultMaster, setVaultMaster] = useState('')
+  const [vaultLabel, setVaultLabel] = useState('')
+  const [vaultUsername, setVaultUsername] = useState('')
+  const [vaultSecret, setVaultSecret] = useState('')
+  const [vaultUrl, setVaultUrl] = useState('')
+  const [vaultNotes, setVaultNotes] = useState('')
+  const [revealedSecret, setRevealedSecret] = useState<{ id: string; value: string } | null>(null)
+  const [vaultMessage, setVaultMessage] = useState('')
   const pollRef = useRef<number | null>(null)
 
   const availableAi = useMemo(() => localAi.filter(runtime => runtime.available), [localAi])
@@ -201,6 +228,12 @@ export default function App() {
       disposed = true
       stopListening?.()
     }
+  }, [])
+
+  useEffect(() => {
+    invoke<VaultStatus>('vault_status')
+      .then(setVaultStatus)
+      .catch(() => setVaultStatus(null))
   }, [])
 
   useEffect(() => {
@@ -324,6 +357,94 @@ export default function App() {
 
   const cancelScan = async () => {
     await invoke('scan_cancel')
+  }
+
+  const refreshVault = async () => {
+    const status = await invoke<VaultStatus>('vault_status')
+    setVaultStatus(status)
+    if (status.unlocked) {
+      setVaultEntries(await invoke<VaultEntrySummary[]>('vault_list_entries'))
+    } else {
+      setVaultEntries([])
+      setRevealedSecret(null)
+    }
+  }
+
+  const createVault = async () => {
+    try {
+      const status = await invoke<VaultStatus>('vault_create', { masterPassword: vaultMaster })
+      setVaultStatus(status)
+      setVaultMaster('')
+      setVaultMessage('Encrypted local vault created.')
+      await refreshVault()
+    } catch (error) {
+      setVaultMessage(String(error))
+    }
+  }
+
+  const unlockVault = async () => {
+    try {
+      const status = await invoke<VaultStatus>('vault_unlock', { masterPassword: vaultMaster })
+      setVaultStatus(status)
+      setVaultMaster('')
+      setVaultMessage('Vault unlocked locally.')
+      await refreshVault()
+    } catch (error) {
+      setVaultMessage(String(error))
+    }
+  }
+
+  const lockVault = async () => {
+    await invoke('vault_lock')
+    setVaultMaster('')
+    setVaultEntries([])
+    setRevealedSecret(null)
+    setVaultMessage('Vault locked.')
+    await refreshVault()
+  }
+
+  const addVaultEntry = async () => {
+    try {
+      await invoke<string>('vault_add_entry', {
+        label: vaultLabel,
+        username: vaultUsername,
+        secret: vaultSecret,
+        url: vaultUrl,
+        notes: vaultNotes,
+      })
+      setVaultLabel('')
+      setVaultUsername('')
+      setVaultSecret('')
+      setVaultUrl('')
+      setVaultNotes('')
+      setVaultMessage('Entry encrypted and saved locally.')
+      await refreshVault()
+    } catch (error) {
+      setVaultMessage(String(error))
+    }
+  }
+
+  const revealVaultEntry = async (entryId: string) => {
+    try {
+      const value = await invoke<string>('vault_get_secret', { entryId })
+      setRevealedSecret({ id: entryId, value })
+      window.setTimeout(() => {
+        setRevealedSecret(current => current?.id === entryId ? null : current)
+      }, 30_000)
+    } catch (error) {
+      setVaultMessage(String(error))
+    }
+  }
+
+  const removeVaultEntry = async (entryId: string) => {
+    try {
+      await invoke('vault_remove_entry', { entryId })
+      setRevealedSecret(null)
+      setVaultMessage('Entry removed from the encrypted vault.')
+      await refreshVault()
+    } catch (error) {
+      setVaultMessage(String(error))
+    }
   }
 
   if (phase === 'booting') {
@@ -610,6 +731,79 @@ export default function App() {
             </div>
           </article>}
         </div>
+      </section>}
+
+      {section === 'vault' && <section className="panel">
+        <p className="eyebrow">LOCAL ENCRYPTED VAULT</p>
+        <h2>Your passwords stay on this computer.</h2>
+        <p className="muted">CashPatch never scrapes browser passwords, never uploads vault contents and never uses stored credentials to log in by itself.</p>
+
+        {!vaultStatus?.exists && <div className="permission-list">
+          <article>
+            <div>
+              <b>Create a local vault</b>
+              <small>Use a long master passphrase. CashPatch cannot recover it for you.</small>
+            </div>
+            <div>
+              <input type="password" value={vaultMaster} onChange={e => setVaultMaster(e.target.value)} placeholder="Master passphrase · 12+ characters" autoComplete="new-password" />
+              <button disabled={vaultMaster.length < 12} onClick={createVault}>Create vault</button>
+            </div>
+          </article>
+        </div>}
+
+        {vaultStatus?.exists && !vaultStatus.unlocked && <div className="permission-list">
+          <article>
+            <div>
+              <b>Vault locked</b>
+              <small>Argon2id key derivation · XChaCha20-Poly1305 authenticated encryption · automatic lock after {Math.round(vaultStatus.autoLockSeconds / 60)} minutes.</small>
+            </div>
+            <div>
+              <input type="password" value={vaultMaster} onChange={e => setVaultMaster(e.target.value)} placeholder="Master passphrase" autoComplete="current-password" />
+              <button onClick={unlockVault}>Unlock locally</button>
+            </div>
+          </article>
+        </div>}
+
+        {vaultStatus?.unlocked && <>
+          <div className="button-row">
+            <button className="secondary" onClick={lockVault}>Lock vault now</button>
+            <button className="secondary" onClick={refreshVault}>Refresh</button>
+          </div>
+
+          <div className="permission-list">
+            <article>
+              <div>
+                <b>Add credential</b>
+                <small>Only credentials you deliberately enter are stored. No browser/session extraction.</small>
+              </div>
+              <div>
+                <input value={vaultLabel} onChange={e => setVaultLabel(e.target.value)} placeholder="Label" />
+                <input value={vaultUsername} onChange={e => setVaultUsername(e.target.value)} placeholder="Username / email" autoComplete="off" />
+                <input type="password" value={vaultSecret} onChange={e => setVaultSecret(e.target.value)} placeholder="Password / secret" autoComplete="new-password" />
+                <input value={vaultUrl} onChange={e => setVaultUrl(e.target.value)} placeholder="Website (optional)" />
+                <input value={vaultNotes} onChange={e => setVaultNotes(e.target.value)} placeholder="Notes (optional)" />
+                <button disabled={!vaultLabel.trim() || !vaultSecret} onClick={addVaultEntry}>Encrypt and save</button>
+              </div>
+            </article>
+          </div>
+
+          <div className="permission-list">
+            {vaultEntries.map(entry => <article key={entry.id}>
+              <div>
+                <b>{entry.label}</b>
+                <small>{entry.username || 'No username'}{entry.url ? ` · ${entry.url}` : ''}</small>
+                {revealedSecret?.id === entry.id && <small>Password: {revealedSecret.value} · hidden again after 30 seconds</small>}
+              </div>
+              <div className="button-row">
+                <button className="secondary" onClick={() => revealVaultEntry(entry.id)}>Reveal 30s</button>
+                <button className="secondary" onClick={() => removeVaultEntry(entry.id)}>Remove</button>
+              </div>
+            </article>)}
+            {!vaultEntries.length && <article><div><b>Vault empty</b><small>Add credentials manually when you want CashPatch to store them.</small></div></article>}
+          </div>
+        </>}
+
+        {vaultMessage && <p className="status">{vaultMessage}</p>}
       </section>}
 
       {section === 'activity' && <section className="panel empty">
