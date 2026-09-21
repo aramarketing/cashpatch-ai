@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { enable, isEnabled } from '@tauri-apps/plugin-autostart'
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check } from '@tauri-apps/plugin-updater'
@@ -212,8 +212,9 @@ export default function App() {
     }
   }
 
-  const enableAutostart = async () => {
-    await enable()
+  const setAutostartEnabled = async (nextEnabled: boolean) => {
+    if (nextEnabled) await enable()
+    else await disable()
     setAutostart(await isEnabled())
   }
 
@@ -448,7 +449,7 @@ export default function App() {
         <div className="permission-list">
           <article>
             <div><b>Start CashPatch with this computer</b><small>{autostart ? 'Enabled' : 'Disabled'}</small></div>
-            {!autostart && <button onClick={enableAutostart}>Enable</button>}
+            <button className={autostart ? 'secondary' : undefined} onClick={() => setAutostartEnabled(!autostart)}>{autostart ? 'Disable' : 'Enable'}</button>
           </article>
           <article>
             <div><b>Desktop notification</b><small>Test the native alert channel.</small></div>
