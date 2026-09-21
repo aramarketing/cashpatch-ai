@@ -42,6 +42,8 @@ jobs:
 
       - name: Build test installer
         working-directory: desktop
+        env:
+          CASHPATCH_ADHOC_TEST_BUILD: ${{ runner.os == 'macOS' && '1' || '0' }}
         run: npm run desktop:build
 
       - name: End-to-end verify macOS DMG
@@ -174,6 +176,7 @@ jobs:
             echo "quarantine_signature_integrity=PASS"
             echo "gatekeeper_assessment_exit=$spctl_status"
             echo "gatekeeper_state=$gatekeeper_state"
+            echo "credential_store=protected_local_test_store"
           } > src-tauri/target/release/bundle/E2E_EVIDENCE.txt
 
           echo "macOS native installer verification PASS; human Gatekeeper approval remains required when gatekeeper_state=MANUAL_APPROVAL_REQUIRED"
@@ -295,7 +298,8 @@ jobs:
             "runner_os=$env:RUNNER_OS",
             'installer_e2e=PASS',
             'windows_installed_runtime_launch=PASS',
-            'windows_uninstall=PASS'
+            'windows_uninstall=PASS',
+            'credential_store=windows_credential_manager'
           ) | Set-Content 'src-tauri/target/release/bundle/E2E_EVIDENCE.txt'
 
       - name: Upload installer bundle with E2E evidence
