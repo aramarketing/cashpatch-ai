@@ -175,6 +175,9 @@ export default function App() {
   const [vaultNotes, setVaultNotes] = useState('')
   const [revealedSecret, setRevealedSecret] = useState<{ id: string; value: string } | null>(null)
   const [vaultMessage, setVaultMessage] = useState('')
+  const [jevEndpoint, setJevEndpoint] = useState('')
+  const [customAiEndpoint, setCustomAiEndpoint] = useState('')
+  const [localAiMessage, setLocalAiMessage] = useState('')
   const pollRef = useRef<number | null>(null)
 
   const availableAi = useMemo(() => localAi.filter(runtime => runtime.available), [localAi])
@@ -445,6 +448,24 @@ export default function App() {
     } catch (error) {
       setVaultMessage(String(error))
     }
+  }
+
+  const saveLocalAiEndpoint = async (provider: 'jev' | 'custom-local', endpoint: string) => {
+    try {
+      await invoke('local_ai_endpoint_set', { provider, endpoint })
+      setLocalAiMessage(`${provider === 'jev' ? 'Jev' : 'Custom local AI'} endpoint saved locally.`)
+      await refreshLocalDiscovery()
+    } catch (error) {
+      setLocalAiMessage(String(error))
+    }
+  }
+
+  const clearLocalAiEndpoint = async (provider: 'jev' | 'custom-local') => {
+    await invoke('local_ai_endpoint_clear', { provider })
+    if (provider === 'jev') setJevEndpoint('')
+    else setCustomAiEndpoint('')
+    setLocalAiMessage('Local AI endpoint removed.')
+    await refreshLocalDiscovery()
   }
 
   if (phase === 'booting') {
@@ -724,13 +745,34 @@ export default function App() {
             <span className={runtime.available ? 'ok-badge' : 'off-badge'}>{runtime.available ? 'Ready' : 'Not detected'}</span>
           </article>)}
           {!availableAi.length && <article>
-            <div><b>Need a local model?</b><small>Both options are free to install.</small></div>
+            <div><b>Need a local model?</b><small>Ollama and LM Studio are detected automatically on loopback only.</small></div>
             <div className="button-row">
               <button onClick={() => openUrl('https://ollama.com/download')}>Ollama</button>
               <button className="secondary" onClick={() => openUrl('https://lmstudio.ai/')}>LM Studio</button>
             </div>
           </article>}
+          <article>
+            <div><b>Jev local endpoint</b><small>Optional. CashPatch accepts only localhost/127.0.0.1/::1 endpoints and never falls back to a cloud AI.</small></div>
+            <div>
+              <input value={jevEndpoint} onChange={e => setJevEndpoint(e.target.value)} placeholder="http://127.0.0.1:PORT/health-or-models" />
+              <div className="button-row">
+                <button disabled={!jevEndpoint.trim()} onClick={() => saveLocalAiEndpoint('jev', jevEndpoint)}>Save Jev</button>
+                <button className="secondary" onClick={() => clearLocalAiEndpoint('jev')}>Clear</button>
+              </div>
+            </div>
+          </article>
+          <article>
+            <div><b>Other local AI endpoint</b><small>For an explicitly configured local-only runtime. Remote hosts are rejected by the native egress policy.</small></div>
+            <div>
+              <input value={customAiEndpoint} onChange={e => setCustomAiEndpoint(e.target.value)} placeholder="http://localhost:PORT/health-or-models" />
+              <div className="button-row">
+                <button disabled={!customAiEndpoint.trim()} onClick={() => saveLocalAiEndpoint('custom-local', customAiEndpoint)}>Save local AI</button>
+                <button className="secondary" onClick={() => clearLocalAiEndpoint('custom-local')}>Clear</button>
+              </div>
+            </div>
+          </article>
         </div>
+        {localAiMessage && <p className="status">{localAiMessage}</p>}
       </section>}
 
       {section === 'vault' && <section className="panel">
