@@ -4,8 +4,11 @@ CashPatch produces internal QA installers for Windows and macOS from GitHub Acti
 
 - Windows test builds are unsigned and can trigger Microsoft Defender SmartScreen.
 - macOS test builds are ad-hoc code-signed but are not Developer ID signed or notarized.
+- Because an ad-hoc signature has no stable identity across rebuilt binaries, the internal macOS test build must not depend on a Keychain ACL that prompts for the login password on every new build.
 
 The ad-hoc macOS signature is intentional: it provides a structurally valid signed app bundle without requiring a paid Apple Developer certificate or committing signing secrets.
+
+For the **ad-hoc internal macOS test installer only**, `CASHPATCH_ADHOC_TEST_BUILD=1` switches desktop session credentials to a local test credential file under the user's CashPatch application-support directory. The directory is restricted to mode `0700` and the file to `0600`. This avoids the macOS Keychain password loop caused by a changing ad-hoc code identity. The device credential remains server-revocable and can authorize review-only endpoints only. Official signed production builds do not enable this fallback and continue to use the operating-system credential store.
 
 ## Hard E2E build and verification
 
@@ -69,7 +72,7 @@ These rules apply to both test and production builds:
 
 1. CashPatch is review-only. It may surface findings and recommended human actions, but it must not send, edit, delete, click, type into, or otherwise mutate connected external systems.
 2. Banking is Account Information only. The desktop banking path may retrieve account metadata, balances and transactions for analysis. Payment initiation, transfers and any other bank write operation are forbidden.
-3. A paired device receives a device credential only after browser approval. Desktop credentials are stored in the operating-system keyring rather than in frontend storage.
+3. A paired device receives a device credential only after browser approval. Official signed builds store desktop credentials in the operating-system credential store and never in frontend storage. The ad-hoc macOS internal test installer uses the documented mode-0600 application-support fallback because ad-hoc rebuilds have no stable Keychain identity.
 4. Server-side entitlement is authoritative. A paired device may monitor sources only while the server reports an active device and an active workspace subscription.
 5. The desktop source API exposes only connections with `permission_mode=review_only` and `external_write_allowed=false`.
 6. Local folders are opt-in. CashPatch receives no local folder path until the user chooses one explicitly.
