@@ -40,5 +40,7 @@ jobs:
       - name: Generate platform icons
         working-directory: desktop
         run: npx tauri icon src-tauri/icons/icon.png
+      - name: Run native Rust tests
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
       - name: Check Tauri backend
         run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
