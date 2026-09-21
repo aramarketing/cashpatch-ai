@@ -31,10 +31,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'entitlement_required' }, { status: 402 })
     }
 
+    // Desktop CashPatch is review-only by contract. Do not expose a connection to
+    // the desktop client if it can mutate the external system, even if such a
+    // connection exists elsewhere in the workspace.
     const { data: sources, error } = await admin
       .from('source_connections')
       .select('id,provider,provider_category,display_name,status,scopes,capabilities,permission_mode,external_write_allowed,updated_at')
       .eq('workspace_id', ent.workspace_id)
+      .eq('permission_mode', 'review_only')
+      .eq('external_write_allowed', false)
       .order('created_at', { ascending: true })
 
     if (error) throw error
@@ -52,6 +57,7 @@ export async function POST(request: Request) {
         externalWriteAllowed: source.external_write_allowed,
         updatedAt: source.updated_at,
       })),
+      reviewOnly: true,
     })
   } catch (error) {
     console.error('desktop source list failed', error)
