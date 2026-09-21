@@ -1,6 +1,7 @@
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 use tauri::{
   menu::{Menu, MenuItem},
   tray::TrayIconBuilder,
@@ -11,19 +12,102 @@ use uuid::Uuid;
 const CLOUD_BASE: &str = "https://cashpatch-ai.vercel.app";
 const KEYRING_SERVICE: &str = "com.cashpatch.desktop";
 
+fn ad_hoc_test_store_enabled() -> bool {
+  #[cfg(target_os = "macos")]
+  {
+    option_env!("CASHPATCH_ADHOC_TEST_BUILD") == Some("1")
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    false
+  }
+}
+
 fn keyring_entry(name: &str) -> Result<Entry, String> {
   Entry::new(KEYRING_SERVICE, name).map_err(|e| e.to_string())
 }
 
+fn test_store_path() -> Result<PathBuf, String> {
+  let home = std::env::var_os("HOME").ok_or("HOME is not available")?;
+  let dir = PathBuf::from(home)
+    .join("Library")
+    .join("Application Support")
+    .join("CashPatch");
+
+  fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+  }
+
+  Ok(dir.join("device-session.json"))
+}
+
+fn test_store_load() -> Result<BTreeMap<String, String>, String> {
+  let path = test_store_path()?;
+  if !path.exists() {
+    return Ok(BTreeMap::new());
+  }
+
+  let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+  if raw.trim().is_empty() {
+    return Ok(BTreeMap::new());
+  }
+
+  serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+fn test_store_save(values: &BTreeMap<String, String>) -> Result<(), String> {
+  let path = test_store_path()?;
+  let temp = path.with_extension("tmp");
+  let body = serde_json::to_vec(values).map_err(|e| e.to_string())?;
+
+  fs::write(&temp, body).map_err(|e| e.to_string())?;
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&temp, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+  }
+
+  fs::rename(&temp, &path).map_err(|e| e.to_string())?;
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+  }
+
+  Ok(())
+}
+
 fn secret_get(name: &str) -> Option<String> {
+  if ad_hoc_test_store_enabled() {
+    return test_store_load().ok()?.get(name).cloned();
+  }
   keyring_entry(name).ok()?.get_password().ok()
 }
 
 fn secret_set(name: &str, value: &str) -> Result<(), String> {
+  if ad_hoc_test_store_enabled() {
+    let mut values = test_store_load()?;
+    values.insert(name.to_string(), value.to_string());
+    return test_store_save(&values);
+  }
   keyring_entry(name)?.set_password(value).map_err(|e| e.to_string())
 }
 
 fn secret_delete(name: &str) {
+  if ad_hoc_test_store_enabled() {
+    if let Ok(mut values) = test_store_load() {
+      values.remove(name);
+      let _ = test_store_save(&values);
+    }
+    return;
+  }
+
   if let Ok(entry) = keyring_entry(name) {
     let _ = entry.delete_password();
   }
