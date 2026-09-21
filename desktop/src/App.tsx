@@ -193,19 +193,37 @@ export default function App() {
       const result = await invoke<PairStart>('pair_start')
       setPair(result)
       setPhase('pairing')
+      setMessage('Waiting for browser approval…')
       await openUrl(result.approveUrl)
 
       if (pollRef.current) window.clearInterval(pollRef.current)
-      pollRef.current = window.setInterval(async () => {
+
+      const pollPairing = async () => {
+        if (Date.now() >= Date.parse(result.expiresAt)) {
+          if (pollRef.current) window.clearInterval(pollRef.current)
+          pollRef.current = null
+          setMessage('This pairing code expired. Start a new pairing request.')
+          return
+        }
+
         try {
           const consumed = await invoke<PairConsume>('pair_consume')
           if (consumed.state === 'paired') {
             if (pollRef.current) window.clearInterval(pollRef.current)
             pollRef.current = null
+            setMessage('Device approved. Verifying subscription…')
             await refreshEntitlement()
+          } else {
+            setMessage('Waiting for browser approval…')
           }
-        } catch {}
-      }, 3000)
+        } catch (error) {
+          setMessage(`Pairing service error. Retrying automatically: ${String(error)}`)
+        }
+      }
+
+      await pollPairing()
+      if (pollRef.current === null && Date.now() >= Date.parse(result.expiresAt)) return
+      pollRef.current = window.setInterval(pollPairing, 3000)
     } catch (error) {
       setMessage(String(error))
       setPhase('error')
@@ -256,7 +274,11 @@ export default function App() {
       <h1>Approve this device.</h1>
       <div className="pair-code">{pair?.pairingCode}</div>
       <p>Your browser has opened the CashPatch approval page. After approval, this screen finishes automatically.</p>
-      {pair && <button className="secondary" onClick={() => openUrl(pair.approveUrl)}>Open approval page</button>}
+      <p className="status">{message}</p>
+      <div className="button-row">
+        {pair && <button className="secondary" onClick={() => openUrl(pair.approveUrl)}>Open approval page</button>}
+        {message.includes('expired') && <button onClick={beginPairing}>Start new pairing</button>}
+      </div>
     </div>
   }
 
