@@ -3,6 +3,5 @@
 mod inventory;
 
 fn main() {
-  let _ = inventory::collect_system_inventory();
   cashpatch_desktop_lib::run();
 }
