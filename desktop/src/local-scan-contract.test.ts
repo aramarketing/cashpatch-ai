@@ -27,8 +27,8 @@ describe('local scan consent and privacy contracts', () => {
     expect(scan).toContain('pub fn scan_pause()')
     expect(scan).toContain('pub fn scan_resume()')
     expect(scan).toContain('pub fn scan_cancel()')
-    expect(app).not.toContain("invoke('quick_scan_start')")
-      || expect(app).toContain('const startQuickScan = async () =>')
+    expect(app).toContain('const startQuickScan = async () =>')
+    expect(app).toContain('onClick={startQuickScan}')
   })
 
   it('does not expose the legacy cloud banking content sync command to the desktop UI', () => {
