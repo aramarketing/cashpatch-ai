@@ -17,7 +17,10 @@ export default async function DesktopPairPage({
 
   const supabase = await createClient()
   const { data: auth } = await supabase.auth.getClaims()
-  if (!auth?.claims?.sub) redirect('/login')
+  if (!auth?.claims?.sub) {
+    const returnTo = `/desktop/pair?code=${encodeURIComponent(code)}`
+    redirect(`/login?next=${encodeURIComponent(returnTo)}`)
+  }
 
   const { data: memberships } = await supabase
     .from('workspace_members')
@@ -33,7 +36,10 @@ export default async function DesktopPairPage({
     const server = await createClient()
     const { data: currentAuth } = await server.auth.getClaims()
     const userId = currentAuth?.claims?.sub
-    if (!userId) redirect('/login')
+    if (!userId) {
+      const returnTo = `/desktop/pair?code=${encodeURIComponent(code)}`
+      redirect(`/login?next=${encodeURIComponent(returnTo)}`)
+    }
 
     const { data: currentMemberships } = await server
       .from('workspace_members')
