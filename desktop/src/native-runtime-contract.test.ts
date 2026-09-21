@@ -40,6 +40,17 @@ describe('native desktop runtime contracts', () => {
     expect(appSource).toContain("notifyFinding('CashPatch alert test', 'Desktop notifications are working.')")
   })
 
+  it('uses a no-prompt credential store only for ad-hoc macOS test builds', () => {
+    expect(rustSource).toContain('CASHPATCH_ADHOC_TEST_BUILD')
+    expect(rustSource).toContain('option_env!("CASHPATCH_ADHOC_TEST_BUILD") == Some("1")')
+    expect(rustSource).toContain('.join("Application Support")')
+    expect(rustSource).toContain('.join("CashPatch")')
+    expect(rustSource).toContain('.join("device-session.json")')
+    expect(rustSource).toContain('Permissions::from_mode(0o700)')
+    expect(rustSource).toContain('Permissions::from_mode(0o600)')
+    expect(rustSource).toContain('keyring_entry(name)?.set_password(value)')
+  })
+
   it('detects supported local AI only through loopback endpoints', () => {
     expect(rustSource).toContain('http://127.0.0.1:11434/api/tags')
     expect(rustSource).toContain('http://127.0.0.1:1234/v1/models')
