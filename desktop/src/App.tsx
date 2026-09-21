@@ -6,8 +6,6 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check } from '@tauri-apps/plugin-updater'
 import { notifyFinding } from './notifications'
-import { analyzeBankTransactions, normalizeOpenBankingSync } from './connectors/banking/engine'
-import type { BankingFinding } from './connectors/banking/types'
 
 type PairStart = {
   pairingCode: string
@@ -147,8 +145,6 @@ export default function App() {
   const [detectedSources, setDetectedSources] = useState<DetectedSource[]>([])
   const [approvedFolder, setApprovedFolder] = useState<string | null>(null)
   const [connectedSources, setConnectedSources] = useState<CloudSource[]>([])
-  const [bankFindings, setBankFindings] = useState<BankingFinding[]>([])
-  const [lastBankScan, setLastBankScan] = useState<Date | null>(null)
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
   const [quickConsent, setQuickConsent] = useState(false)
   const [fullConsent, setFullConsent] = useState(false)
@@ -184,44 +180,6 @@ export default function App() {
   const refreshBusinessSources = async () => {
     const sources = await invoke<CloudSource[]>('cloud_sources').catch(() => [])
     setConnectedSources(sources)
-
-    const bankingSources = sources.filter(source =>
-      source.provider === 'open_banking' &&
-      source.status === 'connected' &&
-      source.permissionMode === 'review_only' &&
-      source.externalWriteAllowed === false
-    )
-
-    const findings: BankingFinding[] = []
-    for (const source of bankingSources) {
-      try {
-        const payload = await invoke<unknown>('banking_sync', { sourceConnectionId: source.id })
-        const transactions = normalizeOpenBankingSync(payload)
-        findings.push(...analyzeBankTransactions(transactions))
-      } catch {
-        // A failed bank refresh must not affect other sources or unlock any action path.
-      }
-    }
-
-    const unique = [...new Map(findings.map(finding => [finding.id, finding])).values()]
-    setBankFindings(unique)
-    if (bankingSources.length) setLastBankScan(new Date())
-
-    let seen = new Set<string>()
-    try {
-      seen = new Set(JSON.parse(localStorage.getItem('cashpatch-seen-bank-findings-v1') ?? '[]'))
-    } catch {}
-
-    const newImportant = unique.filter(finding => finding.confidence >= 0.84 && !seen.has(finding.id))
-    for (const finding of newImportant.slice(0, 3)) {
-      await notifyFinding(
-        `CashPatch · ${finding.title}`,
-        `${finding.amount.toFixed(2)} ${finding.currency} · ${finding.explanation}`,
-      ).catch(() => false)
-      seen.add(finding.id)
-    }
-
-    localStorage.setItem('cashpatch-seen-bank-findings-v1', JSON.stringify([...seen].slice(-500)))
   }
 
   useEffect(() => {
@@ -261,12 +219,8 @@ export default function App() {
     refreshLocalDiscovery()
     refreshBusinessSources()
     const entitlementTimer = window.setInterval(refreshEntitlement, 5 * 60 * 1000)
-    const discoveryTimer = window.setInterval(refreshLocalDiscovery, 15 * 60 * 1000)
-    const businessTimer = window.setInterval(refreshBusinessSources, 15 * 60 * 1000)
     return () => {
       window.clearInterval(entitlementTimer)
-      window.clearInterval(discoveryTimer)
-      window.clearInterval(businessTimer)
     }
   }, [phase])
 
@@ -455,9 +409,9 @@ export default function App() {
       {section === 'watchtower' && <section className="grid">
         <article className="hero-panel">
           <p className="eyebrow">WATCHTOWER</p>
-          <h2>{bankFindings.length ? `${bankFindings.length} banking finding${bankFindings.length === 1 ? '' : 's'} need review.` : 'No urgent findings yet.'}</h2>
-          <p>{bankFindings.length ? 'CashPatch found read-only banking signals worth checking. Nothing was changed in the bank account.' : 'CashPatch is ready to correlate approved signals locally and notify you only when something deserves attention.'}</p>
-          <button onClick={() => bankFindings.length ? setSection('findings') : setSection('permissions')}>{bankFindings.length ? 'Review findings' : 'Review permissions'}</button>
+          <h2>{(scanSnapshot?.findingsCount ?? 0) ? `${scanSnapshot?.findingsCount} local finding${scanSnapshot?.findingsCount === 1 ? '' : 's'} need review.` : 'No urgent findings yet.'}</h2>
+          <p>{(scanSnapshot?.findingsCount ?? 0) ? 'CashPatch found local review-only signals worth checking. Nothing was changed on this computer or in any connected account.' : 'CashPatch is idle. No scan runs until you explicitly start one.'}</p>
+          <button onClick={() => (scanSnapshot?.findingsCount ?? 0) ? setSection('findings') : setSection('scan')}>{(scanSnapshot?.findingsCount ?? 0) ? 'Review findings' : 'Start a scan'}</button>
         </article>
         <article>
           <p className="eyebrow">LOCAL AI</p>
@@ -570,24 +524,25 @@ export default function App() {
         </>}
       </section>}
 
-      {section === 'findings' && (bankFindings.length
+      {section === 'findings' && ((scanSnapshot?.findings.length ?? 0)
         ? <section className="local-findings">
-            {bankFindings.map(finding => <article key={finding.id} className="local-finding">
+            {scanSnapshot!.findings.map(finding => <article key={finding.id} className="local-finding">
               <div className="local-finding-top">
-                <span>{finding.type.replaceAll('_', ' ')}</span>
-                <strong>{Math.round(finding.confidence * 100)}%</strong>
+                <span>{finding.category.replaceAll('_', ' ')}</span>
+                <strong>{finding.severity}</strong>
               </div>
               <h3>{finding.title}</h3>
-              <div className="local-finding-amount">{finding.amount.toFixed(2)} {finding.currency}</div>
-              <p>{finding.explanation}</p>
-              <div className="local-next"><span>RECOMMENDED HUMAN ACTION</span><b>{finding.recommendedAction}</b></div>
-              <small>Review only · CashPatch changed nothing in the bank account.</small>
+              <p>{finding.summary}</p>
+              <small>{finding.evidence}</small>
+              <div className="local-next"><span>RECOMMENDED HUMAN ACTION</span><b>{finding.remediation}</b></div>
+              <small>Review only · CashPatch changed nothing.</small>
             </article>)}
           </section>
         : <section className="panel empty">
             <div className="orb">0</div>
             <h2>No findings yet.</h2>
-            <p>Findings will appear automatically after approved sources begin producing signals.</p>
+            <p>CashPatch is idle until you start a Quick Scan and confirm a Full Scan.</p>
+            <button onClick={() => setSection('scan')}>Open Scan</button>
           </section>)}
 
       {section === 'sources' && <section className="source-grid">
@@ -689,8 +644,8 @@ export default function App() {
             <button className="secondary" onClick={() => check()}>Check now</button>
           </article>
           <article>
-            <div><b>Last bank scan</b><small>{lastBankScan ? lastBankScan.toLocaleString() : 'No connected bank scanned yet'}</small></div>
-            <button className="secondary" onClick={refreshBusinessSources}>Scan now</button>
+            <div><b>Scan behavior</b><small>Manual only. CashPatch never starts a content scan in the background.</small></div>
+            <button className="secondary" onClick={() => setSection('scan')}>Open Scan</button>
           </article>
         </div>
       </section>}
