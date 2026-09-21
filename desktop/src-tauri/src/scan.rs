@@ -671,3 +671,70 @@ pub fn scan_cancel() -> Result<(), String> {
   state.snapshot.cancelled = true;
   Ok(())
 }
+
+#[tauri::command]
+pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
+  let destination = PathBuf::from(path);
+  if destination.as_os_str().is_empty() {
+    return Err("Report destination is required".to_string());
+  }
+
+  let snapshot = runtime()
+    .lock()
+    .map_err(|_| "Scan state is unavailable".to_string())?
+    .snapshot
+    .clone();
+
+  if snapshot.phase != "completed" {
+    return Err("A completed Full Scan is required before report export".to_string());
+  }
+
+  let body = match format.as_str() {
+    "json" => serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?,
+    "markdown" => {
+      let mut lines = Vec::<String>::new();
+      lines.push("# CashPatch Local Audit Report".to_string());
+      lines.push(String::new());
+      lines.push("Review-only report. CashPatch did not execute any remediation or external change.".to_string());
+      lines.push(String::new());
+      lines.push(format!("- Scan ID: {}", snapshot.scan_id.clone().unwrap_or_default()));
+      lines.push(format!("- Files reviewed: {}", snapshot.files_seen));
+      lines.push(format!("- Data mapped: {} bytes", snapshot.bytes_seen));
+      lines.push(format!("- Permission boundaries: {}", snapshot.permission_denied));
+      lines.push(format!("- Findings: {}", snapshot.findings_count));
+      lines.push(format!("- Duration: {} seconds", snapshot.elapsed_seconds));
+      lines.push(String::new());
+      lines.push("## Findings".to_string());
+      lines.push(String::new());
+
+      if snapshot.findings.is_empty() {
+        lines.push("No findings were produced by this scan pass.".to_string());
+      } else {
+        for (index, finding) in snapshot.findings.iter().enumerate() {
+          lines.push(format!("### {}. {}", index + 1, finding.title));
+          lines.push(String::new());
+          lines.push(format!("- Category: {}", finding.category));
+          lines.push(format!("- Severity: {}", finding.severity));
+          lines.push(format!("- Evidence: {}", finding.evidence));
+          lines.push(String::new());
+          lines.push(finding.summary.clone());
+          lines.push(String::new());
+          lines.push(format!("**Recommended human action:** {}", finding.remediation));
+          lines.push(String::new());
+        }
+      }
+
+      lines.join("\n")
+    }
+    _ => return Err("Unsupported report format".to_string()),
+  };
+
+  if let Some(parent) = destination.parent() {
+    if !parent.as_os_str().is_empty() {
+      std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+  }
+
+  std::fs::write(destination, body).map_err(|e| e.to_string())
+}
+
