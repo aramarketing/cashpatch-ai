@@ -46,6 +46,7 @@ jobs:
 
       - name: End-to-end verify macOS DMG
         if: runner.os == 'macOS'
+        timeout-minutes: 5
         working-directory: desktop
         shell: bash
         run: |
@@ -66,6 +67,8 @@ jobs:
           installed_app="$install_root/CashPatch.app"
           launch_log="$RUNNER_TEMP/cashpatch-macos-launch.log"
           spctl_log="$RUNNER_TEMP/cashpatch-macos-spctl.log"
+          spctl_status_file="$RUNNER_TEMP/cashpatch-macos-spctl.status"
+          open_status_file="$RUNNER_TEMP/cashpatch-macos-open.status"
           mkdir -p "$install_root"
 
           cleanup() {
@@ -119,25 +122,65 @@ jobs:
           xattr -w com.apple.quarantine "$quarantine_value" "$installed_app"
           xattr -p com.apple.quarantine "$installed_app"
 
-          echo "Recording Gatekeeper assessment"
-          set +e
-          spctl --assess --type execute --verbose=4 "$installed_app" >"$spctl_log" 2>&1
-          spctl_status=$?
-          set -e
+          echo "Recording Gatekeeper assessment with a hard timeout"
+          python3 - "$installed_app" "$spctl_log" "$spctl_status_file" <<'PY'
+          import pathlib, subprocess, sys
+          app, log_path, status_path = sys.argv[1:]
+          try:
+              result = subprocess.run(
+                  ["spctl", "--assess", "--type", "execute", "--verbose=4", app],
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+              )
+              pathlib.Path(log_path).write_text((result.stdout or "") + (result.stderr or ""))
+              pathlib.Path(status_path).write_text(str(result.returncode))
+          except subprocess.TimeoutExpired as exc:
+              output = (exc.stdout or "") + (exc.stderr or "")
+              if isinstance(output, bytes):
+                  output = output.decode(errors="replace")
+              pathlib.Path(log_path).write_text(output + "\nspctl timed out after 30 seconds\n")
+              pathlib.Path(status_path).write_text("124")
+          PY
+          spctl_status="$(cat "$spctl_status_file")"
           cat "$spctl_log"
+          if [[ "$spctl_status" == "124" ]]; then
+            echo "Gatekeeper assessment timed out" >&2
+            exit 1
+          fi
           if grep -Eiq 'damaged|is damaged|code object is not signed at all|bundle format is ambiguous|resource envelope is obsolete|modified after being signed' "$spctl_log"; then
             echo "Gatekeeper reports a damaged/invalid-signature class failure" >&2
             exit 1
           fi
           echo "Gatekeeper assessment exit code: $spctl_status"
 
-          echo "Launching the quarantined installed app through LaunchServices"
+          echo "Launching the quarantined installed app through LaunchServices with a hard timeout"
           rm -f "$launch_log"
-          set +e
-          open -na "$installed_app" >"$launch_log" 2>&1
-          open_status=$?
-          set -e
+          python3 - "$installed_app" "$launch_log" "$open_status_file" <<'PY'
+          import pathlib, subprocess, sys
+          app, log_path, status_path = sys.argv[1:]
+          try:
+              result = subprocess.run(
+                  ["open", "-na", app],
+                  capture_output=True,
+                  text=True,
+                  timeout=20,
+              )
+              pathlib.Path(log_path).write_text((result.stdout or "") + (result.stderr or ""))
+              pathlib.Path(status_path).write_text(str(result.returncode))
+          except subprocess.TimeoutExpired as exc:
+              output = (exc.stdout or "") + (exc.stderr or "")
+              if isinstance(output, bytes):
+                  output = output.decode(errors="replace")
+              pathlib.Path(log_path).write_text(output + "\nopen timed out after 20 seconds\n")
+              pathlib.Path(status_path).write_text("124")
+          PY
+          open_status="$(cat "$open_status_file")"
           cat "$launch_log" || true
+          if [[ "$open_status" == "124" ]]; then
+            echo "LaunchServices timed out while opening the quarantined app" >&2
+            exit 1
+          fi
           if [[ $open_status -ne 0 ]]; then
             echo "LaunchServices rejected the quarantined installed app" >&2
             exit 1
