@@ -26,6 +26,7 @@ keyring = "2"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 hostname = "0.4"
+sysinfo = "0.33"
 
 walkdir = "2"
 blake3 = "1"
