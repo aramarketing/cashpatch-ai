@@ -203,12 +203,12 @@ export default function App() {
 
       if (pollRef.current) window.clearInterval(pollRef.current)
 
-      const pollPairing = async () => {
+      const pollPairing = async (): Promise<'pending' | 'paired' | 'expired'> => {
         if (Date.now() >= Date.parse(result.expiresAt)) {
           if (pollRef.current) window.clearInterval(pollRef.current)
           pollRef.current = null
           setMessage('This pairing code expired. Start a new pairing request.')
-          return
+          return 'expired'
         }
 
         try {
@@ -218,17 +218,27 @@ export default function App() {
             pollRef.current = null
             setMessage('Device approved. Verifying subscription…')
             await refreshEntitlement()
-          } else {
-            setMessage('Waiting for browser approval…')
+            return 'paired'
           }
+
+          setMessage('Waiting for browser approval…')
+          return 'pending'
         } catch (error) {
           setMessage(`Pairing service error. Retrying automatically: ${String(error)}`)
+          return 'pending'
         }
       }
 
-      await pollPairing()
-      if (pollRef.current === null && Date.now() >= Date.parse(result.expiresAt)) return
-      pollRef.current = window.setInterval(pollPairing, 3000)
+      const initialState = await pollPairing()
+      if (initialState !== 'pending') return
+
+      pollRef.current = window.setInterval(async () => {
+        const state = await pollPairing()
+        if (state !== 'pending' && pollRef.current) {
+          window.clearInterval(pollRef.current)
+          pollRef.current = null
+        }
+      }, 3000)
     } catch (error) {
       setMessage(String(error))
       setPhase('error')
