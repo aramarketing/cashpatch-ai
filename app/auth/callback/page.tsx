@@ -3,6 +3,11 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
+function safeReturnTo(value: string | null) {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/dashboard'
+  return value
+}
+
 export default function AuthCallbackPage() {
   const [message, setMessage] = useState('Completing secure sign-in…')
 
@@ -13,6 +18,7 @@ export default function AuthCallbackPage() {
       try {
         const supabase = createClient()
         const url = new URL(window.location.href)
+        const nextPath = safeReturnTo(url.searchParams.get('next'))
         const code = url.searchParams.get('code')
 
         if (code) {
@@ -39,12 +45,13 @@ export default function AuthCallbackPage() {
           }
         }
 
-        // Remove auth parameters/tokens from the address bar before continuing.
         window.history.replaceState({}, '', '/auth/callback')
 
         if (!cancelled) {
-          setMessage('Signed in. Opening your recovery dashboard…')
-          window.location.replace('/dashboard')
+          setMessage(nextPath.startsWith('/desktop/pair?')
+            ? 'Signed in. Returning to device approval…'
+            : 'Signed in. Opening your recovery dashboard…')
+          window.location.replace(nextPath)
         }
       } catch (error) {
         if (!cancelled) {
