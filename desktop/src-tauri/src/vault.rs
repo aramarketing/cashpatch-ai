@@ -126,7 +126,7 @@ fn encrypt_payload(payload: &VaultPayload, key: &[u8], salt: &[u8]) -> Result<Va
   OsRng.fill_bytes(&mut nonce_bytes);
   let nonce = XNonce::from_slice(&nonce_bytes);
 
-  let plaintext = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
+  let plaintext = Zeroizing::new(serde_json::to_vec(payload).map_err(|e| e.to_string())?);
   let ciphertext = cipher
     .encrypt(
       nonce,
@@ -161,7 +161,7 @@ fn decrypt_payload(envelope: &VaultEnvelope, key: &[u8]) -> Result<VaultPayload,
     .map_err(|_| "Invalid vault ciphertext".to_string())?;
 
   let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| "Invalid vault key".to_string())?;
-  let plaintext = cipher
+  let plaintext = Zeroizing::new(cipher
     .decrypt(
       XNonce::from_slice(&nonce_bytes),
       chacha20poly1305::aead::Payload {
@@ -169,7 +169,7 @@ fn decrypt_payload(envelope: &VaultEnvelope, key: &[u8]) -> Result<VaultPayload,
         aad: VAULT_AAD,
       },
     )
-    .map_err(|_| "Vault could not be unlocked".to_string())?;
+    .map_err(|_| "Vault could not be unlocked".to_string())?);
 
   serde_json::from_slice(&plaintext).map_err(|_| "Vault data is invalid".to_string())
 }
