@@ -214,12 +214,14 @@ fn unlocked_key() -> Result<Zeroizing<Vec<u8>>, String> {
     }
   }
 
-  let Some(key) = state.key.as_ref() else {
-    return Err("Vault is locked".to_string());
-  };
+  let key = state
+    .key
+    .as_ref()
+    .map(|key| Zeroizing::new(key.to_vec()))
+    .ok_or_else(|| "Vault is locked".to_string())?;
 
   state.last_activity = Some(Instant::now());
-  Ok(Zeroizing::new(key.to_vec()))
+  Ok(key)
 }
 
 fn load_payload(app: &AppHandle, key: &[u8]) -> Result<(VaultEnvelope, VaultPayload, Vec<u8>), String> {
