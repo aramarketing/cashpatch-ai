@@ -1,15 +1,22 @@
-# CashPatch unsigned desktop test installers
+# CashPatch desktop test installers
 
-CashPatch currently produces **unsigned test builds** for Windows and macOS from GitHub Actions. They are intended for internal QA before release signing is introduced.
+CashPatch produces internal QA installers for Windows and macOS from GitHub Actions.
+
+- Windows test builds are unsigned and can trigger Microsoft Defender SmartScreen.
+- macOS test builds are ad-hoc code-signed but are not Developer ID signed or notarized.
+
+The ad-hoc macOS signature is intentional: Apple Silicon requires code signing for apps downloaded from the Internet, and Tauri documents the pseudo-identity `-` for this no-certificate test case. This removes the completely unsigned/broken-app failure while keeping the build free of paid certificates and signing secrets.
 
 ## Build and verification
 
 The `Desktop Test Installers` workflow builds the desktop app on the native GitHub-hosted operating system and uploads platform-specific artifacts:
 
 - Windows: installable `.exe` bundle
-- macOS: `.dmg` bundle
+- macOS: ad-hoc-signed `.dmg` bundle
 
-The workflow must finish its platform smoke-check before the artifact is uploaded. Checksums are written alongside the bundles. `Desktop CI` separately runs the desktop tests, frontend build, icon generation and `cargo check` on both Windows and macOS whenever a file under `desktop/**` changes.
+The workflow must finish its platform smoke-check before the artifact is uploaded. Checksums are written alongside the bundles. On macOS the workflow also verifies the app's code signature and starts the packaged executable briefly, so a DMG that merely mounts but contains a non-launchable app does not pass.
+
+`Desktop CI` separately runs the desktop tests, frontend build, icon generation and `cargo check` on both Windows and macOS whenever a file under `desktop/**` changes.
 
 ## Windows test install
 
@@ -19,9 +26,15 @@ A production Windows release should be signed with an appropriate code-signing c
 
 ## macOS test install
 
-Because the test `.dmg` is not Developer ID signed or notarized, macOS Gatekeeper can block the first launch. For an internal test build, verify the artifact and its SHA-256 checksum first. A tester may then use the normal macOS explicit-open flow for an app they trust. Do not weaken Gatekeeper globally and do not distribute the unsigned build as a production release.
+The macOS app is ad-hoc signed but not Developer ID signed or notarized, so Gatekeeper can still require explicit approval on the first launch.
 
-A production macOS release should use Developer ID signing and Apple notarization before general distribution.
+For an internal test build:
+
+1. Drag `CashPatch.app` from the DMG into `Applications`.
+2. Control-click or right-click `CashPatch.app` in Applications and choose **Open**.
+3. If macOS still blocks it, open **System Settings > Privacy & Security** and use **Open Anyway** for CashPatch after the blocked launch attempt.
+
+Do not disable Gatekeeper globally. A production macOS release should use Developer ID signing and Apple notarization before general distribution.
 
 ## Security invariants for desktop builds
 
@@ -38,4 +51,4 @@ These rules apply to both test and production builds:
 
 ## Release-signing boundary
 
-Release signing/notarization is intentionally outside the unsigned-test workflow. Adding paid certificates or production signing credentials requires an explicit release setup and must use repository/environment secrets rather than committed files.
+Developer ID signing/notarization is intentionally outside the free test workflow. Adding production signing credentials requires an explicit release setup and must use repository/environment secrets rather than committed files.
