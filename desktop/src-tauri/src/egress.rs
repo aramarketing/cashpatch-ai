@@ -1,4 +1,5 @@
 use reqwest::Url;
+use std::net::IpAddr;
 
 const ACCOUNT_CONTROL_PATHS: &[&str] = &[
   "/api/desktop/pair/start",
@@ -58,8 +59,18 @@ pub fn allow_update_download(url: &str) -> Result<(), String> {
 
 pub fn allow_local_ai(url: &str) -> Result<(), String> {
   let parsed = Url::parse(url).map_err(|_| "Invalid local AI destination")?;
-  let host = parsed.host_str().unwrap_or_default();
-  if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
+  let host = parsed
+    .host_str()
+    .unwrap_or_default()
+    .trim_start_matches('[')
+    .trim_end_matches(']');
+  let is_loopback = host.eq_ignore_ascii_case("localhost")
+    || host
+      .parse::<IpAddr>()
+      .map(|address| address.is_loopback())
+      .unwrap_or(false);
+
+  if !is_loopback {
     return Err("Local AI must use a loopback address".to_string());
   }
   if !matches!(parsed.scheme(), "http" | "https") {
@@ -98,6 +109,7 @@ mod tests {
   #[test]
   fn local_ai_is_loopback_only_without_embedded_credentials() {
     assert!(allow_local_ai("http://127.0.0.1:11434/api/tags").is_ok());
+    assert!(allow_local_ai("http://127.0.0.2:11434/api/tags").is_ok());
     assert!(allow_local_ai("http://localhost:1234/v1/models").is_ok());
     assert!(allow_local_ai("http://[::1]:8080/health").is_ok());
     assert!(allow_local_ai("https://api.openai.com/v1/models").is_err());
