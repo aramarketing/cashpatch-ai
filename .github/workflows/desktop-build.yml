@@ -44,7 +44,7 @@ jobs:
         working-directory: desktop
         run: npm run desktop:build
 
-      - name: Smoke-test macOS DMG
+      - name: End-to-end verify macOS DMG
         if: runner.os == 'macOS'
         working-directory: desktop
         shell: bash
@@ -62,9 +62,16 @@ jobs:
           hdiutil verify "$dmg"
 
           mount_dir="$(mktemp -d)"
+          install_root="$RUNNER_TEMP/CashPatch-E2E/Applications"
+          installed_app="$install_root/CashPatch.app"
+          launch_log="$RUNNER_TEMP/cashpatch-macos-launch.log"
+          spctl_log="$RUNNER_TEMP/cashpatch-macos-spctl.log"
+          mkdir -p "$install_root"
+
           cleanup() {
+            pkill -f "$installed_app/Contents/MacOS/" >/dev/null 2>&1 || true
             hdiutil detach "$mount_dir" -force >/dev/null 2>&1 || true
-            rmdir "$mount_dir" >/dev/null 2>&1 || true
+            rm -rf "$mount_dir" "$RUNNER_TEMP/CashPatch-E2E" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
@@ -78,34 +85,86 @@ jobs:
           info_plist="$app_bundle/Contents/Info.plist"
           plutil -lint "$info_plist"
           executable="$(plutil -extract CFBundleExecutable raw -o - "$info_plist")"
-          app_binary="$app_bundle/Contents/MacOS/$executable"
-          test -x "$app_binary"
-          file "$app_binary" | grep -q 'Mach-O'
+          source_binary="$app_bundle/Contents/MacOS/$executable"
+          test -x "$source_binary"
+          file "$source_binary" | grep -q 'Mach-O'
 
-          echo "Verifying ad-hoc code signature"
-          codesign --verify --deep --strict --verbose=2 "$app_bundle"
-          signature_details="$(codesign -dv --verbose=4 "$app_bundle" 2>&1)"
+          echo "Copying the packaged app to a separate Applications-style install target"
+          rm -rf "$installed_app"
+          ditto "$app_bundle" "$installed_app"
+          installed_binary="$installed_app/Contents/MacOS/$executable"
+          test -x "$installed_binary"
+
+          echo "Verifying the installed app bundle signature"
+          codesign --verify --deep --strict --verbose=2 "$installed_app"
+          signature_details="$(codesign -dv --verbose=4 "$installed_app" 2>&1)"
           printf '%s\n' "$signature_details"
           printf '%s\n' "$signature_details" | grep -q 'Signature=adhoc'
 
-          echo "Launching packaged executable for a short runtime smoke test"
-          smoke_log="$(mktemp)"
-          "$app_binary" >"$smoke_log" 2>&1 &
+          echo "Runtime-smoke testing the copied packaged binary"
+          "$installed_binary" >"$launch_log" 2>&1 &
           app_pid=$!
-          sleep 5
+          sleep 6
           if ! kill -0 "$app_pid" >/dev/null 2>&1; then
-            echo "Packaged CashPatch executable exited during smoke test" >&2
-            cat "$smoke_log" >&2 || true
+            echo "Installed CashPatch binary exited during runtime smoke test" >&2
+            cat "$launch_log" >&2 || true
             wait "$app_pid" || true
             exit 1
           fi
           kill "$app_pid" >/dev/null 2>&1 || true
           wait "$app_pid" >/dev/null 2>&1 || true
-          rm -f "$smoke_log"
 
-          echo "DMG smoke test passed: signed app bundle contains a launchable executable"
+          echo "Applying quarantine metadata to reproduce a downloaded app"
+          quarantine_value="0083;$(printf '%x' "$(date +%s)");GitHubActions;"
+          xattr -w com.apple.quarantine "$quarantine_value" "$installed_app"
+          xattr -p com.apple.quarantine "$installed_app"
 
-      - name: Smoke-test Windows EXE installer
+          echo "Recording Gatekeeper assessment"
+          set +e
+          spctl --assess --type execute --verbose=4 "$installed_app" >"$spctl_log" 2>&1
+          spctl_status=$?
+          set -e
+          cat "$spctl_log"
+          if grep -Eiq 'damaged|is damaged|code object is not signed at all|bundle format is ambiguous|resource envelope is obsolete|modified after being signed' "$spctl_log"; then
+            echo "Gatekeeper reports a damaged/invalid-signature class failure" >&2
+            exit 1
+          fi
+          echo "Gatekeeper assessment exit code: $spctl_status"
+
+          echo "Launching the quarantined installed app through LaunchServices"
+          rm -f "$launch_log"
+          set +e
+          open -na "$installed_app" >"$launch_log" 2>&1
+          open_status=$?
+          set -e
+          cat "$launch_log" || true
+          if [[ $open_status -ne 0 ]]; then
+            echo "LaunchServices rejected the quarantined installed app" >&2
+            exit 1
+          fi
+
+          launch_seen=0
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if pgrep -f "$installed_binary" >/dev/null 2>&1; then
+              launch_seen=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ $launch_seen -ne 1 ]]; then
+            echo "LaunchServices returned success, but the quarantined installed app never started" >&2
+            exit 1
+          fi
+          sleep 5
+          if ! pgrep -f "$installed_binary" >/dev/null 2>&1; then
+            echo "Quarantined installed app started but exited immediately" >&2
+            exit 1
+          fi
+          pkill -f "$installed_binary" >/dev/null 2>&1 || true
+
+          echo "macOS DMG E2E PASS: verified, copied, signed, quarantined and launched through LaunchServices"
+
+      - name: End-to-end verify Windows EXE installer
         if: runner.os == 'Windows'
         working-directory: desktop
         shell: pwsh
@@ -121,7 +180,7 @@ jobs:
             throw "Installer is not a valid Windows PE executable: $($installer.FullName)"
           }
 
-          Write-Host "Installing $($installer.FullName) silently for smoke verification"
+          Write-Host "Installing $($installer.FullName) silently for E2E verification"
           $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) {
             throw "NSIS installer exited with code $($install.ExitCode)"
@@ -138,30 +197,83 @@ jobs:
           if (-not $entry) {
             throw 'CashPatch installer returned success but no installed-app registration was found'
           }
-
           if (-not $entry.UninstallString) {
             throw 'CashPatch installed-app registration is missing its uninstaller'
           }
 
-          Write-Host "Windows installer smoke test passed: $($entry.DisplayName) is registered"
+          $candidateExecutables = @()
+          if ($entry.DisplayIcon) {
+            $displayIcon = ($entry.DisplayIcon -replace ',\d+$','').Trim('"')
+            if ($displayIcon) { $candidateExecutables += $displayIcon }
+          }
+          if ($entry.InstallLocation -and (Test-Path $entry.InstallLocation)) {
+            $candidateExecutables += Get-ChildItem -Path $entry.InstallLocation -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -notmatch 'uninstall' } |
+              Select-Object -ExpandProperty FullName
+          }
+          $candidateExecutables += @(
+            (Join-Path $env:LOCALAPPDATA 'CashPatch\cashpatch-desktop.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\CashPatch\cashpatch-desktop.exe'),
+            (Join-Path $env:LOCALAPPDATA 'CashPatch\CashPatch.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\CashPatch\CashPatch.exe')
+          )
 
-          $uninstaller = $entry.UninstallString.Trim('"')
-          if (Test-Path $uninstaller) {
-            $remove = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
-            if ($remove.ExitCode -ne 0) {
-              Write-Warning "Smoke-test cleanup uninstaller exited with code $($remove.ExitCode)"
-            }
+          $appExe = $candidateExecutables |
+            Where-Object { $_ -and (Test-Path $_) } |
+            Select-Object -Unique |
+            Select-Object -First 1
+          if (-not $appExe) {
+            Write-Host "InstallLocation: $($entry.InstallLocation)"
+            Write-Host "DisplayIcon: $($entry.DisplayIcon)"
+            throw 'CashPatch installed successfully, but the installed application executable could not be located'
           }
 
-      - name: Write installer checksums
+          Write-Host "Launching installed application: $appExe"
+          $app = Start-Process -FilePath $appExe -PassThru
+          Start-Sleep -Seconds 6
+          $app.Refresh()
+          if ($app.HasExited) {
+            throw "Installed CashPatch application exited during runtime smoke test with code $($app.ExitCode)"
+          }
+          Write-Host "Installed CashPatch application stayed alive for the runtime smoke window"
+          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
+
+          $uninstaller = $entry.UninstallString.Trim('"')
+          if (-not (Test-Path $uninstaller)) {
+            throw "Registered CashPatch uninstaller does not exist: $uninstaller"
+          }
+          $remove = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) {
+            throw "CashPatch uninstaller exited with code $($remove.ExitCode)"
+          }
+
+          Start-Sleep -Seconds 2
+          $remaining = Get-ItemProperty $uninstallRoots -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -eq 'CashPatch' } |
+            Select-Object -First 1
+          if ($remaining) {
+            throw 'CashPatch remained registered after silent uninstall'
+          }
+
+          Write-Host 'Windows EXE E2E PASS: installed, launched, stayed alive and uninstalled cleanly'
+
+      - name: Write macOS installer checksums and evidence
         if: runner.os == 'macOS'
         working-directory: desktop
         shell: bash
         run: |
           find src-tauri/target/release/bundle -type f \( -name '*.dmg' -o -name '*.app.tar.gz' \) -print0 |
             xargs -0 shasum -a 256 > src-tauri/target/release/bundle/SHA256SUMS.txt
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "runner_os=$RUNNER_OS"
+            echo "installer_e2e=PASS"
+            echo "macos_runtime_launch=PASS"
+            echo "macos_quarantine_launchservices=PASS"
+          } > src-tauri/target/release/bundle/E2E_EVIDENCE.txt
 
-      - name: Write installer checksums
+      - name: Write Windows installer checksums and evidence
         if: runner.os == 'Windows'
         working-directory: desktop
         shell: pwsh
@@ -171,11 +283,18 @@ jobs:
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $($_.Path)" } |
             Set-Content 'src-tauri/target/release/bundle/SHA256SUMS.txt'
+          @(
+            "commit=$env:GITHUB_SHA",
+            "runner_os=$env:RUNNER_OS",
+            'installer_e2e=PASS',
+            'windows_installed_runtime_launch=PASS',
+            'windows_uninstall=PASS'
+          ) | Set-Content 'src-tauri/target/release/bundle/E2E_EVIDENCE.txt'
 
-      - name: Upload installer bundle
+      - name: Upload verified installer bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ matrix.artifact }}-${{ github.sha }}
           path: desktop/src-tauri/target/release/bundle/**
           if-no-files-found: error
           retention-days: 14
