@@ -276,7 +276,56 @@ async fn discover_local_ai() -> Result<Vec<LocalAiRuntime>, String> {
     available: lm_studio,
   });
 
+  for (key, name, setting) in [
+    ("jev", "Jev", "local-ai-jev-endpoint"),
+    ("custom-local", "Custom Local AI", "local-ai-custom-endpoint"),
+  ] {
+    if let Some(endpoint) = secret_get(setting) {
+      let available = if egress::allow_local_ai(&endpoint).is_ok() {
+        client
+          .get(&endpoint)
+          .send()
+          .await
+          .map(|r| r.status().is_success() || r.status().is_client_error())
+          .unwrap_or(false)
+      } else {
+        false
+      };
+
+      runtimes.push(LocalAiRuntime {
+        key: key.to_string(),
+        name: name.to_string(),
+        endpoint,
+        available,
+      });
+    }
+  }
+
   Ok(runtimes)
+}
+
+#[tauri::command]
+fn local_ai_endpoint_set(provider: String, endpoint: String) -> Result<(), String> {
+  let key = match provider.as_str() {
+    "jev" => "local-ai-jev-endpoint",
+    "custom-local" => "local-ai-custom-endpoint",
+    _ => return Err("Unsupported local AI provider".to_string()),
+  };
+
+  egress::allow_local_ai(&endpoint)?;
+  secret_set(key, endpoint.trim())
+}
+
+#[tauri::command]
+fn local_ai_endpoint_clear(provider: String) -> Result<(), String> {
+  let key = match provider.as_str() {
+    "jev" => "local-ai-jev-endpoint",
+    "custom-local" => "local-ai-custom-endpoint",
+    _ => return Err("Unsupported local AI provider".to_string()),
+  };
+
+  secret_delete(key);
+  Ok(())
 }
 
 #[tauri::command]
@@ -579,6 +628,8 @@ pub fn run() {
       pair_consume,
       entitlement_check,
       discover_local_ai,
+      local_ai_endpoint_set,
+      local_ai_endpoint_clear,
       discover_supported_apps,
       cloud_sources,
       approved_folder_get,
