@@ -1,5 +1,6 @@
 mod egress;
 mod scan;
+mod vault;
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -588,7 +589,15 @@ pub fn run() {
       scan::scan_status,
       scan::scan_pause,
       scan::scan_resume,
-      scan::scan_cancel
+      scan::scan_cancel,
+      vault::vault_status,
+      vault::vault_create,
+      vault::vault_unlock,
+      vault::vault_lock,
+      vault::vault_list_entries,
+      vault::vault_add_entry,
+      vault::vault_get_secret,
+      vault::vault_remove_entry
     ])
     .run(tauri::generate_context!())
     .expect("error while running CashPatch");
