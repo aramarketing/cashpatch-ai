@@ -77,6 +77,27 @@ type LocalFinding = {
   remediation: string
 }
 
+type VulnerabilityDatabaseStatus = {
+  available: boolean
+  path: string
+  schemaVersion?: number | null
+  generatedAt?: string | null
+  source?: string | null
+  recordCount: number
+  error?: string | null
+}
+
+type VulnerabilityFinding = {
+  vulnerabilityId: string
+  softwareName: string
+  installedVersion: string
+  fixedVersion?: string | null
+  severity: string
+  summary: string
+  reference?: string | null
+  confidence: string
+}
+
 type VaultStatus = {
   exists: boolean
   unlocked: boolean
@@ -146,7 +167,7 @@ type ScanStatusView = ScanSnapshot & {
 }
 
 type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
-type Section = 'watchtower' | 'scan' | 'findings' | 'sources' | 'permissions' | 'ai' | 'vault' | 'activity' | 'subscription' | 'settings'
+type Section = 'watchtower' | 'scan' | 'findings' | 'sources' | 'permissions' | 'security' | 'ai' | 'vault' | 'activity' | 'subscription' | 'settings'
 
 const PORTAL = 'https://cashpatch-ai.vercel.app'
 
@@ -173,6 +194,7 @@ const navigation: Array<[Section, string]> = [
   ['findings', 'Findings'],
   ['sources', 'Sources'],
   ['permissions', 'Permissions'],
+  ['security', 'Security'],
   ['ai', 'Local AI'],
   ['vault', 'Password Vault'],
   ['activity', 'Activity'],
@@ -200,6 +222,9 @@ export default function App() {
   const [detectedSources, setDetectedSources] = useState<DetectedSource[]>([])
   const [approvedFolder, setApprovedFolder] = useState<string | null>(null)
   const [connectedSources, setConnectedSources] = useState<CloudSource[]>([])
+  const [vulnerabilityStatus, setVulnerabilityStatus] = useState<VulnerabilityDatabaseStatus | null>(null)
+  const [vulnerabilityFindings, setVulnerabilityFindings] = useState<VulnerabilityFinding[]>([])
+  const [securityMessage, setSecurityMessage] = useState('')
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
   const [scanRecovery, setScanRecovery] = useState<ScanRecovery | null>(null)
   const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([])
@@ -267,6 +292,25 @@ export default function App() {
     setConnectedSources(sources)
   }
 
+  const refreshVulnerabilityStatus = async () => {
+    const status = await invoke<VulnerabilityDatabaseStatus>('vulnerability_database_status').catch(() => null)
+    setVulnerabilityStatus(status)
+    return status
+  }
+
+  const runVulnerabilityReview = async () => {
+    setSecurityMessage('Checking installed software against the verified local database…')
+    try {
+      const findings = await invoke<VulnerabilityFinding[]>('vulnerability_scan')
+      setVulnerabilityFindings(findings)
+      setSecurityMessage(findings.length
+        ? `${findings.length} installed-software vulnerability match${findings.length === 1 ? '' : 'es'} found locally.`
+        : 'No installed-software vulnerability matches were found in the current local database.')
+    } catch (error) {
+      setSecurityMessage(String(error))
+    }
+  }
+
   useEffect(() => {
     let disposed = false
     let stopListening: (() => void) | undefined
@@ -314,6 +358,7 @@ export default function App() {
     if (phase !== 'ready') return
     refreshLocalDiscovery()
     refreshBusinessSources()
+    refreshVulnerabilityStatus()
     const entitlementTimer = window.setInterval(refreshEntitlement, 5 * 60 * 1000)
     return () => {
       window.clearInterval(entitlementTimer)
@@ -849,6 +894,39 @@ export default function App() {
             <div><b>Connected business sources</b><small>{connectedSources.length ? connectedSources.map(source => source.displayName ?? source.provider).join(', ') : 'No cloud sources connected yet'}</small></div>
             <button onClick={refreshBusinessSources}>Refresh now</button>
           </article>
+        </div>
+      </section>}
+
+      {section === 'security' && <section className="panel">
+        <p className="eyebrow">SECURITY / VULNERABILITIES</p>
+        <h2>Known software risks, checked locally.</h2>
+        <p className="muted">CashPatch compares installed application names and versions only with a verified local vulnerability database. Your software inventory is never uploaded for this check.</p>
+        <div className="permission-list">
+          <article>
+            <div>
+              <b>Local vulnerability database</b>
+              <small>{vulnerabilityStatus?.available
+                ? `${vulnerabilityStatus.recordCount.toLocaleString()} records · generated ${vulnerabilityStatus.generatedAt ?? 'unknown'} · ${vulnerabilityStatus.source || 'local verified source'}`
+                : 'No verified local vulnerability database is installed yet.'}</small>
+              {vulnerabilityStatus?.error && <small>{vulnerabilityStatus.error}</small>}
+            </div>
+            <div className="button-row">
+              <button className="secondary" onClick={refreshVulnerabilityStatus}>Refresh status</button>
+              <button disabled={!vulnerabilityStatus?.available} onClick={runVulnerabilityReview}>Run local vulnerability check</button>
+            </div>
+          </article>
+        </div>
+        {!vulnerabilityStatus?.available && <p className="status">CashPatch fails closed: without a verified local database it does not send your installed-software list to any cloud vulnerability service.</p>}
+        {securityMessage && <p className="status">{securityMessage}</p>}
+        <div className="local-findings">
+          {vulnerabilityFindings.map(finding => <article className="local-finding" key={`${finding.vulnerabilityId}-${finding.softwareName}`}>
+            <div className="local-finding-top"><span>vulnerability</span><strong>{finding.severity}</strong></div>
+            <h3>{finding.vulnerabilityId} · {finding.softwareName}</h3>
+            <p>{finding.summary}</p>
+            <small>Installed {finding.installedVersion}{finding.fixedVersion ? ` · fixed in ${finding.fixedVersion}` : ''} · confidence ${finding.confidence}</small>
+            {finding.reference && <small>{finding.reference}</small>}
+            <div className="local-next"><span>RECOMMENDED HUMAN ACTION</span><b>Review the vendor advisory and update the application manually. CashPatch will not install or modify software.</b></div>
+          </article>)}
         </div>
       </section>}
 

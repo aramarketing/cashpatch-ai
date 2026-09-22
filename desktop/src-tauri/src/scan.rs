@@ -723,6 +723,44 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       });
     }
 
+    if let Ok(vulnerabilities) =
+      crate::inventory::vulnerability::analyze_current_system_from_local_database(&app)
+    {
+      for vulnerability in vulnerabilities {
+        let reference = vulnerability
+          .reference
+          .clone()
+          .unwrap_or_else(|| vulnerability.vulnerability_id.clone());
+        let fixed_note = vulnerability
+          .fixed_version
+          .as_deref()
+          .map(|version| format!(" Update to version {version} or later if the vendor confirms it."))
+          .unwrap_or_else(|| " Review the vendor's current supported release.".to_string());
+
+        findings.push(LocalFinding {
+          id: Uuid::new_v4().to_string(),
+          category: "vulnerability".to_string(),
+          severity: vulnerability.severity.clone(),
+          title: format!("Known vulnerability in {}", vulnerability.software_name),
+          summary: format!(
+            "{} version {} matches {} in the verified local vulnerability database. {}",
+            vulnerability.software_name,
+            vulnerability.installed_version,
+            vulnerability.vulnerability_id,
+            vulnerability.summary
+          ),
+          evidence: format!(
+            "{} · installed version {} · {}",
+            vulnerability.vulnerability_id, vulnerability.installed_version, reference
+          ),
+          remediation: format!(
+            "Review the vendor advisory and update the application manually.{} CashPatch will never install, remove or modify software by itself.",
+            fixed_note
+          ),
+        });
+      }
+    }
+
     if denied > 0 {
       findings.push(LocalFinding {
         id: Uuid::new_v4().to_string(),
