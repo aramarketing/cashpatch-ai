@@ -1,0 +1,306 @@
+name: Agent Scan History Patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/agent-scan-history-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wire recovery + history into desktop UI
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def must_replace(path: Path, old: str, new: str):
+              text = path.read_text()
+              if old not in text:
+                  raise SystemExit(f'Pattern not found in {path}: {old[:120]!r}')
+              path.write_text(text.replace(old, new, 1))
+
+          app = Path('desktop/src/App.tsx')
+          scan = Path('desktop/src-tauri/src/scan.rs')
+          lib = Path('desktop/src-tauri/src/lib.rs')
+          test = Path('desktop/src/local-scan-contract.test.ts')
+
+          must_replace(app,
+          "type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'\n",
+          """type ScanRecovery = {
+            available: boolean
+            previousScanId?: string | null
+            mode?: string | null
+            phase?: string | null
+            roots: string[]
+            filesSeen: number
+            directoriesSeen: number
+            bytesSeen: number
+            progressPercent: number
+            savedAtUnix?: number | null
+            note: string
+          }
+
+          type ScanHistoryEntry = {
+            scanId: string
+            mode: string
+            status: string
+            filesSeen: number
+            directoriesSeen: number
+            bytesSeen: number
+            permissionDenied: number
+            findingsCount: number
+            elapsedSeconds: number
+            finishedAtUnix: number
+          }
+
+          type ScanStatusView = ScanSnapshot & {
+            recovery: ScanRecovery
+            history: ScanHistoryEntry[]
+          }
+
+          type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
+          """)
+
+          must_replace(app,
+          """const formatEta = (seconds?: number | null) => {
+            if (seconds == null) return 'Estimating…'
+            if (seconds < 60) return `${Math.max(1, seconds)} sec`
+            if (seconds < 3600) return `${Math.ceil(seconds / 60)} min`
+            return `${Math.ceil(seconds / 3600)} h`
+          }
+          """,
+          """const formatEta = (seconds?: number | null) => {
+            if (seconds == null) return 'Estimating…'
+            if (seconds < 60) return `${Math.max(1, seconds)} sec`
+            if (seconds < 3600) return `${Math.ceil(seconds / 60)} min`
+            return `${Math.ceil(seconds / 3600)} h`
+          }
+
+          const formatHistoryTime = (unix: number) => new Date(unix * 1000).toLocaleString()
+          """)
+
+          must_replace(app,
+          """  const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
+            const [quickConsent, setQuickConsent] = useState(false)
+          """,
+          """  const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
+            const [scanRecovery, setScanRecovery] = useState<ScanRecovery | null>(null)
+            const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([])
+            const [recoveryConsent, setRecoveryConsent] = useState(false)
+            const [activityMessage, setActivityMessage] = useState('')
+            const [quickConsent, setQuickConsent] = useState(false)
+          """)
+
+          must_replace(app,
+          """  const refreshBusinessSources = async () => {
+            const sources = await invoke<CloudSource[]>('cloud_sources').catch(() => [])
+            setConnectedSources(sources)
+          }
+          """,
+          """  const refreshBusinessSources = async () => {
+            const sources = await invoke<CloudSource[]>('cloud_sources').catch(() => [])
+            setConnectedSources(sources)
+          }
+
+            const applyScanStatus = (status: ScanStatusView) => {
+              const { recovery, history, ...snapshot } = status
+              setScanSnapshot(snapshot)
+              setScanRecovery(recovery)
+              setScanHistory(history)
+            }
+
+            const refreshScanState = async () => {
+              const status = await invoke<ScanStatusView>('scan_status')
+              applyScanStatus(status)
+              return status
+            }
+          """)
+
+          must_replace(app,
+          """    invoke<ScanSnapshot>('scan_status').then(snapshot => {
+              if (!disposed) setScanSnapshot(snapshot)
+            }).catch(() => {})
+          """,
+          """    invoke<ScanStatusView>('scan_status').then(status => {
+              if (!disposed) applyScanStatus(status)
+            }).catch(() => {})
+          """)
+
+          must_replace(app,
+          """  useEffect(() => {
+            invoke<VaultStatus>('vault_status')
+          """,
+          """  useEffect(() => {
+            if (!scanSnapshot || !['completed', 'cancelled', 'failed'].includes(scanSnapshot.phase)) return
+            refreshScanState().catch(() => {})
+          }, [scanSnapshot?.phase])
+
+            useEffect(() => {
+            invoke<VaultStatus>('vault_status')
+          """)
+
+          must_replace(app,
+          """    await invoke<string>('quick_scan_start', { consent: true, extraRoots })
+            }
+
+            const startFullScan = async () => {
+          """,
+          """    await invoke<string>('quick_scan_start', { consent: true, extraRoots, recoverInterrupted: false })
+            }
+
+            const resumeInterruptedScan = async () => {
+              if (!recoveryConsent || !scanRecovery?.available) return
+              setSection('scan')
+              await invoke<string>('quick_scan_start', { consent: true, extraRoots: [], recoverInterrupted: true })
+              setRecoveryConsent(false)
+              setActivityMessage('Interrupted scope restarted after explicit confirmation.')
+            }
+
+            const discardInterruptedScan = async () => {
+              await invoke('scan_discard_recovery')
+              setRecoveryConsent(false)
+              setActivityMessage('Interrupted scan journal discarded locally.')
+              await refreshScanState()
+            }
+
+            const clearScanHistory = async () => {
+              await invoke('scan_clear_history')
+              setActivityMessage('Local scan history cleared.')
+              await refreshScanState()
+            }
+
+            const startFullScan = async () => {
+          """)
+
+          must_replace(app,
+          """        <p className=\"muted\">CashPatch scans only after your explicit consent. Quick Scan inventories scope and estimates the Full Scan. Full Scan requires a second confirmation.</p>
+
+            {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled') && <>
+          """,
+          """        <p className=\"muted\">CashPatch scans only after your explicit consent. Quick Scan inventories scope and estimates the Full Scan. Full Scan requires a second confirmation.</p>
+
+            {scanRecovery?.available && (!scanSnapshot || !['quick_scanning', 'full_scanning'].includes(scanSnapshot.phase)) && <div className=\"permission-list\">
+              <article>
+                <div>
+                  <b>Interrupted scan found</b>
+                  <small>{scanRecovery.note}</small>
+                  <small>{scanRecovery.filesSeen.toLocaleString()} files mapped · {scanRecovery.progressPercent.toFixed(1)}% recorded{scanRecovery.savedAtUnix ? ` · ${formatHistoryTime(scanRecovery.savedAtUnix)}` : ''}</small>
+                </div>
+                <label><input type=\"checkbox\" checked={recoveryConsent} onChange={e => setRecoveryConsent(e.target.checked)} /> Restart the same approved scope locally</label>
+                <div className=\"button-row\">
+                  <button disabled={!recoveryConsent} onClick={resumeInterruptedScan}>Resume safely</button>
+                  <button className=\"secondary\" onClick={discardInterruptedScan}>Discard journal</button>
+                </div>
+              </article>
+            </div>}
+
+            {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled') && <>
+          """)
+
+          must_replace(app,
+          """      {section === 'activity' && <section className=\"panel empty\">
+            <div className=\"orb\">✓</div>
+            <h2>No review activity yet.</h2>
+            <p>The audit trail will record reads, syncs and analyses — never external changes.</p>
+          </section>}
+          """,
+          """      {section === 'activity' && <section className=\"panel\">
+            <p className=\"eyebrow\">LOCAL SCAN HISTORY</p>
+            <h2>What CashPatch reviewed.</h2>
+            <p className=\"muted\">Stored locally with restricted file permissions. History records scan metadata only — never passwords or full document contents.</p>
+            {scanRecovery?.available && <p className=\"status\">An interrupted scan is waiting for explicit recovery confirmation in the Scan section.</p>}
+            <div className=\"permission-list\">
+              {scanHistory.map(entry => <article key={entry.scanId}>
+                <div>
+                  <b>{entry.status.replaceAll('_', ' ')} · {entry.mode}</b>
+                  <small>{formatHistoryTime(entry.finishedAtUnix)} · {entry.filesSeen.toLocaleString()} files · {formatBytes(entry.bytesSeen)} · {entry.findingsCount} findings · {entry.permissionDenied} permission limits</small>
+                  <small>Duration {formatEta(entry.elapsedSeconds)} · Scan ID {entry.scanId}</small>
+                </div>
+              </article>)}
+              {!scanHistory.length && <article><div><b>No completed scan history yet</b><small>Completed, cancelled and failed scans will appear here.</small></div></article>}
+            </div>
+            <div className=\"button-row\">
+              <button className=\"secondary\" onClick={() => refreshScanState().then(() => setActivityMessage('Local scan history refreshed.'))}>Refresh history</button>
+              <button className=\"secondary\" disabled={!scanHistory.length} onClick={clearScanHistory}>Clear local history</button>
+            </div>
+            {activityMessage && <p className=\"status\">{activityMessage}</p>}
+          </section>}
+          """)
+
+          must_replace(scan,
+          """#[tauri::command]
+          pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
+          """,
+          """#[tauri::command]
+          pub fn scan_discard_recovery() -> Result<(), String> {
+            scan_journal::discard_recovery()
+          }
+
+          #[tauri::command]
+          pub fn scan_clear_history() -> Result<(), String> {
+            scan_journal::clear_history()
+          }
+
+          #[tauri::command]
+          pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
+          """)
+
+          must_replace(lib,
+          """      scan::scan_cancel,
+                scan::scan_export_report,
+          """,
+          """      scan::scan_cancel,
+                scan::scan_discard_recovery,
+                scan::scan_clear_history,
+                scan::scan_export_report,
+          """)
+
+          text = test.read_text()
+          insert = """
+
+            it('surfaces crash-safe recovery and local scan history without automatic resume', () => {
+              const app = readRepoFile('desktop/src/App.tsx')
+              const scan = readRepoFile('desktop/src-tauri/src/scan.rs')
+              const journal = readRepoFile('desktop/src-tauri/src/scan_journal.rs')
+              const backend = readRepoFile('desktop/src-tauri/src/lib.rs')
+
+              expect(app).toContain('Interrupted scan found')
+              expect(app).toContain('Restart the same approved scope locally')
+              expect(app).toContain("recoverInterrupted: true")
+              expect(app).toContain('LOCAL SCAN HISTORY')
+              expect(scan).toContain('pub fn scan_discard_recovery()')
+              expect(scan).toContain('pub fn scan_clear_history()')
+              expect(journal).toContain('MAX_HISTORY_ENTRIES: usize = 50')
+              expect(journal).toContain('Permissions::from_mode(0o600)')
+              expect(backend).toContain('scan::scan_discard_recovery,')
+              expect(backend).toContain('scan::scan_clear_history,')
+              expect(app).not.toContain('recoverInterrupted: true })\n  }, [])')
+            })
+          """
+          marker = "\n})\n"
+          idx = text.rfind(marker)
+          if idx < 0:
+              raise SystemExit('Test suite closing marker not found')
+          test.write_text(text[:idx] + insert + text[idx:])
+
+          Path('.github/workflows/agent-scan-history-patch.yml').unlink()
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name 'cashpatch-agent'
+          git config user.email 'cashpatch-agent@users.noreply.github.com'
+          git add desktop/src/App.tsx desktop/src-tauri/src/scan.rs desktop/src-tauri/src/lib.rs desktop/src/local-scan-contract.test.ts .github/workflows/agent-scan-history-patch.yml
+          git commit -m 'Wire crash-safe scan recovery and local history UI'
+          git push origin HEAD:main
