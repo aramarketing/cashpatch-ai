@@ -14,11 +14,28 @@ describe('native system inventory privacy contract', () => {
     expect(inventory).toContain('Networks::new_with_refreshed_list()')
     expect(inventory).toContain('processes()')
     expect(inventory).toContain('installed_apps')
+    expect(inventory).toContain('installed_software')
     expect(inventory).toContain('autostart_entries')
     expect(inventory).not.toContain('std::process::Command')
     expect(inventory).not.toContain('powershell')
     expect(inventory).not.toContain('osascript')
     expect(inventory).not.toContain('cmd.exe')
+  })
+
+  it('collects versioned installed-software metadata from native platform sources', () => {
+    const inventory = readRepoFile('desktop/src-tauri/src/inventory.rs')
+    const cargo = readRepoFile('desktop/src-tauri/Cargo.toml')
+
+    expect(inventory).toContain('pub struct InstalledSoftwareInventory')
+    expect(inventory).toContain('pub version: Option<String>')
+    expect(inventory).toContain('CFBundleShortVersionString')
+    expect(inventory).toContain('CFBundleIdentifier')
+    expect(inventory).toContain('DisplayVersion')
+    expect(inventory).toContain('Publisher')
+    expect(inventory).toContain('windows_uninstall_registry')
+    expect(inventory).toContain('macos_bundle')
+    expect(cargo).toContain('plist = "1"')
+    expect(cargo).toContain('winreg = "0.52"')
   })
 
   it('caps inventory detail so discovery cannot explode memory or UI payloads', () => {
