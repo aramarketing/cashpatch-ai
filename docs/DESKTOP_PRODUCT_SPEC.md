@@ -2,301 +2,261 @@
 
 ## Product form
 
-CashPatch is a downloadable and installable desktop application for macOS and Windows.
+CashPatch is a downloadable desktop application for macOS and Windows. The desktop application is the primary product. The web application is limited to account management, subscription and billing, device pairing, downloads, release notes and support.
 
-The web application is reduced to:
-- account management
-- subscription and billing
-- device pairing
-- download page
-- release notes
-- support
+CashPatch is a local-first, review-only audit system. It observes approved data, produces findings and reports, and never performs remediation in external systems.
 
-The desktop application is the primary product.
+## Non-negotiable operating model
+
+CashPatch does **not** run an automatic background scan.
+
+A scan begins only after the user opens CashPatch and explicitly starts it. The required flow is:
+
+1. show the local/privacy and review-only consent;
+2. user chooses or grants the minimum read-only permissions needed;
+3. user presses **Start Quick Scan**;
+4. Quick Scan inventories metadata and accessible scope only;
+5. CashPatch shows discovered sources, permission boundaries, approximate data size and a Full Scan ETA;
+6. user explicitly confirms the Full Scan;
+7. only then may CashPatch inspect approved content;
+8. Live View shows the current phase/source/path, processed counts, findings, elapsed time, ETA and pause/cancel controls.
+
+Closing or hiding the application cancels an active scan. Restarting CashPatch must never silently resume an interrupted scan. Recovery may be offered, but resumption requires a fresh user confirmation.
+
+Autostart, if enabled by the user, may start the CashPatch shell/tray only. It must not start a scan.
 
 ## Desktop stack
 
 - Tauri 2 desktop shell
-- Rust local service
-- React/TypeScript UI
-- local encrypted database
-- OS keychain/credential vault
+- Rust native audit core
+- React/TypeScript interface
+- protected local scan state/history
+- OS credential store for signed production builds
 - native notifications
-- signed updater
-- local AI runtime
+- signed download-only updater
+- local AI provider abstraction
 - read-only connector runtime
-
-## Startup behavior
-
-CashPatch can launch automatically when the user signs in to the computer.
-
-At startup:
-1. verify local installation integrity
-2. check current app version
-3. check for signed updates
-4. verify paid entitlement
-5. load local permission state
-6. start only approved read-only connectors
-7. start local detection engine
-8. show tray/menu-bar status
-
-If entitlement is not valid, monitoring does not start.
-
-## Paid entitlement
-
-CashPatch must only perform monitoring and analysis while the subscription is valid.
-
-Source of truth:
-Stripe -> CashPatch webhook -> Supabase billing_accounts -> desktop entitlement endpoint.
-
-Allowed paid states:
-- active
-
-All other states disable monitoring:
-- free
-- trialing unless explicitly converted to paid entitlement
-- past_due
-- canceled
-- unpaid
-- incomplete
-- incomplete_expired
-- paused
-
-The desktop app checks entitlement:
-- at launch
-- when waking from sleep
-- when network connectivity returns
-- periodically while running
-
-A short signed offline lease may be cached so temporary internet loss does not break the app. The lease must expire automatically and cannot be extended locally.
-
-When entitlement expires:
-- source monitoring stops
-- scheduled synchronization stops
-- local AI analysis stops
-- existing findings remain viewable
-- the interface shows a subscription-required screen
-- the user can open the billing portal
-
-The local client must never be able to grant itself entitlement.
-
-## Device binding
-
-Each installation has a generated device identity.
-
-CashPatch stores:
-- device public ID
-- platform
-- architecture
-- app version
-- device public key
-- last-seen timestamp
-
-Private device secrets stay only in the OS keychain.
-
-A user pairs a new installation through the web account:
-1. desktop shows a short pairing code
-2. desktop opens the CashPatch website
-3. user signs in
-4. user approves the detected device
-5. cloud binds device to the paid workspace
-6. desktop receives a device credential
-7. credential is stored in Keychain / Windows Credential Manager
-
-Devices can be revoked remotely.
-
-## Permission discovery
-
-CashPatch discovers what can be connected without reading private content first.
-
-It may detect:
-- installed supported desktop applications
-- supported browsers
-- available local AI runtimes
-- already-running local API endpoints
-- previously approved folders
-- already-configured CashPatch connectors
-
-It must not silently inspect private file contents, mailbox contents or browser history before permission is granted.
-
-For every missing permission, CashPatch shows:
-- what it wants to read
-- why it is useful
-- exactly which permission is requested
-- explicit confirmation that it is read-only
-- a Connect / Grant access button
-- a link or deep-link to the exact provider or operating-system permission screen
-
-Examples:
-- Gmail -> opens Google OAuth read-only consent
-- Outlook -> opens Microsoft read-only OAuth consent
-- HubSpot -> opens HubSpot read-only OAuth consent
-- local folder -> opens native folder chooser
-- macOS privacy permission -> opens the relevant System Settings pane where possible
-- browser observer -> opens extension install/permission flow
-- local model missing -> opens one-click local model setup
+- optional encrypted local password vault
 
 ## Review-only guarantee
 
-All connected systems are read-only.
-
 CashPatch may:
-- read
-- list
-- search
-- inspect
-- synchronize
-- analyze
-- notify
-- create internal findings
-- create internal recommendations
+
+- read data the user explicitly authorizes;
+- list/search/inspect approved local and connected sources;
+- hash files for local duplicate analysis;
+- correlate and analyze locally;
+- create local findings and recommendations;
+- display native notifications;
+- export a user-requested local report.
 
 CashPatch may not:
-- send email or messages
-- create/update/delete CRM records
-- create/update/delete project tasks
-- click or type in external software
-- submit browser forms
-- upload or modify files
-- change settings in connected services
-- create invoices
-- charge/refund/pay/transfer money
 
-If a provider cannot technically guarantee read-only access, the connector must fail closed.
+- send email or messages;
+- create, update or delete CRM/project records;
+- click or type in external software;
+- submit browser forms;
+- upload or modify customer files;
+- change connected-service settings;
+- create invoices;
+- charge, refund, pay or transfer money;
+- initiate bank payments;
+- extract browser passwords, session cookies or protected credentials;
+- bypass operating-system permissions, sandboxing or security controls.
+
+If a connector cannot technically guarantee the required read-only capability, it fails closed and is not enabled.
+
+## Local data boundary
+
+Scan content, files, AI conversations, passwords, financial records and findings stay on the customer device by default. They are not uploaded to CashPatch cloud services.
+
+Allowed network egress is default-deny and limited to:
+
+- CashPatch account/device pairing and paid-entitlement checks;
+- signed application update download;
+- approved vulnerability-database download;
+- a connector explicitly enabled by the user with read-only scopes;
+- loopback-only local AI endpoints.
+
+Unknown destinations are blocked by the native egress policy. There is no cloud-AI fallback for scan content.
+
+## Quick Scan
+
+Quick Scan requires explicit consent and reads metadata needed to estimate Full Scan scope. It may inspect:
+
+- accessible root locations;
+- file and directory counts;
+- file sizes and supported extensions;
+- installed applications and versions;
+- running process names;
+- autostart entries;
+- storage and memory inventory;
+- supported local AI runtimes;
+- configured CashPatch read-only connectors;
+- permission-denied boundaries.
+
+Quick Scan must not bypass protected locations or silently request privilege escalation. The result includes a conservative duration estimate, reachable bytes/files, source count and missing permissions.
+
+## Full Scan
+
+Full Scan requires a second explicit confirmation. It runs only while the user is actively running CashPatch and may analyze approved content locally for:
+
+- duplicate files/documents;
+- exposed-secret file risks without harvesting protected credentials;
+- invoices, receipts, offers and contracts;
+- duplicate invoices and likely double payments;
+- recurring charges and cost anomalies;
+- unusual price changes and potential overpayment;
+- deadlines and consistency errors;
+- installed-software version and known-vulnerability matches;
+- local/exported AI conversations for contradictions, forgotten tasks, cost/contract issues and unresolved risks;
+- explicitly connected read-only account data.
+
+Every finding contains category, severity, confidence/evidence, possible financial or security impact, why it is suspicious and human remediation guidance. There is no execute/remediate button.
+
+## Live View
+
+During a scan the user can see:
+
+- Quick Scan / Full Scan phase;
+- current approved source, folder or item;
+- files/records processed;
+- data volume processed;
+- progress percentage;
+- elapsed time and ETA;
+- permission errors;
+- findings as they appear;
+- Pause/Resume and Cancel controls.
+
+The UI must not expose entire sensitive documents when a short redacted evidence snippet is sufficient.
 
 ## Local AI
 
-The primary intelligence layer runs on the user's computer.
+CashPatch detects and supports loopback-only local runtimes such as Ollama, LM Studio, Jev-compatible endpoints and future compatible providers.
 
-First implementation:
-- detect Ollama / LM Studio / compatible local endpoints
-- offer one-click setup if no local runtime is present
+Rules:
 
-Later production implementation:
-- bundle or automatically download a supported quantized model
-- hardware-aware model selection
-- deterministic rules before LLM analysis
-- no external write tools exposed to the model
+- no scan-content cloud fallback;
+- endpoint must resolve to a loopback address;
+- local model receives only the minimum chunk needed for analysis;
+- deterministic rules run before LLM analysis where possible;
+- models receive no write tools or external-action capabilities;
+- sensitive logs are redacted;
+- if no compatible local model is available, the UI explains setup rather than silently using a remote model.
 
-The local AI continuously correlates approved data across sources.
+## AI conversation review
+
+CashPatch may review AI conversations only after explicit user permission and through a legitimate read-only source:
+
+- user-selected exports;
+- locally available user-owned export data;
+- a provider API that offers appropriate read-only access.
+
+No scraping around provider protections, credential extraction, cookie extraction or session hijacking is allowed.
+
+## Password vault
+
+The optional CashPatch vault is local and user-controlled. It is not a credential extractor or automatic login tool.
+
+Only entries deliberately added/imported by the user are accepted. Target design:
+
+- Argon2id key derivation from a master passphrase;
+- authenticated encryption such as XChaCha20-Poly1305;
+- fresh random salt/nonce;
+- protected local storage;
+- automatic locking;
+- temporary secret reveal and clipboard expiration when clipboard support is added;
+- no plaintext secret logs;
+- no cloud synchronization;
+- no autonomous use of vault secrets against websites or applications.
+
+## System and vulnerability audit
+
+CashPatch may collect read-only OS inventory without shell automation that controls third-party applications. Supported inventory includes operating system, architecture, hardware/memory/storage metadata, process names, network-interface metadata, installed applications/software versions and autostart locations that are readable without privilege bypass.
+
+Known-vulnerability analysis uses a local cached vulnerability database. Database installation/update must validate schema, size limits and cryptographic integrity before replacing the local cache. Vulnerability data may be downloaded; customer telemetry is never uploaded as part of that download.
+
+## Online connectors
+
+Connectors are capability-allowlisted and opt-in. Tokens are stored locally using the platform credential strategy and request only the minimum read scopes.
+
+Target connector categories include email, CRM, project management, accounting, banking, commerce, storage and calendar.
+
+Banking is strictly Account Information only: account metadata, balances and transactions may be read for analysis. Payment initiation, transfers, refunds, payouts and all other bank write actions are prohibited.
+
+## Paid entitlement and account binding
+
+Stripe remains the billing source of truth. The desktop client cannot grant itself entitlement.
+
+Pairing flow:
+
+1. desktop creates a short-lived pairing request;
+2. user approves the device in the browser;
+3. server binds the device to the workspace;
+4. desktop receives a revocable device credential;
+5. signed production builds store credentials in the OS credential store;
+6. the free ad-hoc macOS QA build may use the documented protected local test credential store to avoid unstable Keychain ACL prompts.
+
+When entitlement is not active, new monitoring/scanning is disabled. After a successful payment changes the server from inactive/free to active, an already-open blocked desktop app must detect the new entitlement automatically within 15 seconds without restart.
+
+## Updates
+
+Updates are download-only. CashPatch may check for and download signed application updates but must never upload customer scan content as part of the updater flow.
+
+Production updates must verify signatures before installation. Private updater signing keys are never committed to the repository.
 
 ## Interface
 
-The desktop application has its own interface.
+Primary navigation includes:
 
-Primary navigation:
 - Watchtower / Overview
+- Scan / Live View
 - Findings
 - Sources
-- Connections requiring permission
-- Notifications
+- Permissions
+- Security / Vulnerabilities
+- Costs / Efficiency
+- AI Conversation Review
 - Local AI
-- Activity log
+- Password Vault
+- Reports / Scan History
 - Subscription
-- Settings
+- Settings / Updates / Privacy
 
-Home screen shows:
-- monitoring state
-- paid entitlement state
-- connected sources
-- missing permissions
-- latest findings
-- highest-value risks
-- last successful scan
-- update status
-- confirmation: "Review only — no source changes"
+The home screen must make the idle state obvious: **No scan is running until you start one.** It must never imply continuous background monitoring when no scan is active.
 
-The app also lives in the system tray / macOS menu bar.
+## Notifications and reports
 
-## Notifications
+Native notifications may announce a finding but cannot execute any remediation. Reports are created only when requested by the user and are written locally to a user-selected path. Reports should contain redacted evidence where possible and enough detail for a human or another AI to work through recommendations manually.
 
-CashPatch alerts the user when a meaningful finding appears.
+## Installer and release gates
 
-Default channels:
-- native desktop notification
-- in-app finding inbox
+A build is not complete because compilation succeeds.
 
-Optional:
-- daily digest
-- urgent-only mode
+macOS QA gate:
 
-Notifications contain:
-- finding title
-- monetary value or risk
-- source(s)
-- confidence
-- reason
-- button to open CashPatch finding
+- build current DMG on native macOS;
+- `hdiutil verify`;
+- mount and copy the packaged app to a separate Applications-style location;
+- `codesign --verify --deep --strict`;
+- launch the packaged binary and keep it alive through the smoke window;
+- apply quarantine metadata and record Gatekeeper behavior;
+- `damaged` / `beschädigt` is a hard failure;
+- free ad-hoc QA builds may require the normal Control-click/Open or Privacy & Security/Open Anyway flow;
+- seamless public distribution requires Developer ID signing/notarization.
 
-No action is executed from the notification.
+Windows QA gate:
 
-## Automatic updates
+- build current NSIS/EXE on native Windows;
+- validate PE installer;
+- actually install CashPatch;
+- launch the installed executable and keep it alive through the smoke window;
+- verify installer registration/uninstaller;
+- uninstall cleanly;
+- an unsigned SmartScreen reputation warning may be documented for an internal QA build, but technical install/start failure is a hard failure.
 
-CashPatch uses signed application updates.
-
-Updater behavior:
-- check at startup
-- check periodically while running
-- download only signed update artifacts
-- verify signature before install
-- show release notes
-- support required minimum versions for security fixes
-
-Recommended implementation:
-- Tauri updater
-- signed update artifacts
-- CI builds for macOS and Windows
-- staged release channels: stable / beta
-- cloud endpoint controls current and minimum supported versions
-
-The updater signing private key must never be stored in the repository.
-
-## Release distribution
-
-macOS:
-- DMG installer
-- Apple code signing
-- notarization for public distribution
-
-Windows:
-- NSIS or MSI installer
-- code signing recommended to avoid SmartScreen warnings
-
-Development builds can be produced before commercial signing is purchased.
-
-## Background operation
-
-CashPatch runs quietly in the background.
-
-Preferred behavior:
-- event-driven where APIs/webhooks permit
-- scheduled read-only sync otherwise
-- low-power idle mode
-- pause button
-- no monitoring when entitlement is invalid
-- automatic resume after payment is restored and entitlement becomes valid
-
-## Update and subscription trust chain
-
-Stripe is the billing source of truth.
-
-No client-side flag can unlock the app.
-
-Flow:
-1. Stripe subscription changes
-2. webhook updates server billing state
-3. desktop requests signed entitlement
-4. server checks workspace + subscription + device
-5. server grants or denies short-lived lease
-6. desktop verifies lease
-7. monitoring is enabled only while the lease is valid
-
-A modified local UI alone cannot create a valid server-signed entitlement.
+Final artifacts are commit-specific and accompanied by SHA-256 hashes.
 
 ## Product principle
 
-CashPatch is an installed local business watchdog.
-
-It discovers supported systems, asks for the minimum read-only permission it needs, links the user directly to the correct permission flow, watches continuously, updates itself, and stops monitoring when there is no valid paid subscription.
-
-CashPatch watches. The human decides.
+**CashPatch scans only when the human starts the scan. CashPatch watches and explains. The human decides and acts.**
