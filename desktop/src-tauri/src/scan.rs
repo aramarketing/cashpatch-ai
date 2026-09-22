@@ -1,7 +1,7 @@
 use blake3::Hasher;
 use serde::Serialize;
 use std::{
-  collections::{BTreeMap, HashMap},
+  collections::{BTreeMap, HashMap, HashSet},
   fs::File,
   io::Read,
   path::{Path, PathBuf},
@@ -18,6 +18,8 @@ use walkdir::{DirEntry, WalkDir};
 
 #[path = "scan_journal.rs"]
 mod scan_journal;
+#[path = "document_analysis.rs"]
+mod document_analysis;
 
 const QUICK_MAX_ENTRIES: u64 = 500_000;
 const CONTENT_HASH_MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -540,6 +542,8 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     let mut denied = 0_u64;
     let mut hashes: HashMap<(u64, String), PathBuf> = HashMap::new();
     let mut duplicate_groups = BTreeMap::<String, u64>::new();
+    let mut invoice_numbers = HashMap::<String, (PathBuf, Option<String>)>::new();
+    let mut reported_invoice_numbers = HashSet::<String>::new();
     let mut findings = Vec::<LocalFinding>::new();
 
     for root in &roots {
@@ -582,6 +586,51 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                   evidence: path.display().to_string(),
                   remediation: "Review the file manually and move any secrets into a dedicated encrypted password vault. CashPatch did not read or expose the secret value.".to_string(),
                 });
+              }
+
+              if business_extension(path) {
+                if let Ok(Some(signals)) = document_analysis::analyze_document(path, len) {
+                  if let Some(invoice) = signals.invoice {
+                    if let Some((first_path, first_amount)) = invoice_numbers.get(&invoice.invoice_number) {
+                      if first_path != path && reported_invoice_numbers.insert(invoice.invoice_number.clone()) {
+                        let totals_differ = matches!(
+                          (first_amount.as_deref(), invoice.amount.as_deref()),
+                          (Some(first), Some(current)) if first != current
+                        );
+                        let amount_note = match (first_amount.as_deref(), invoice.amount.as_deref()) {
+                          (Some(first), Some(current)) if first != current => {
+                            format!(" The totals differ ({first} vs. {current}).")
+                          }
+                          (Some(amount), Some(_)) => format!(" Both documents show total {amount}."),
+                          _ => String::new(),
+                        };
+                        let recurring_note = if invoice.recurring_hint {
+                          " The document also contains recurring/subscription language."
+                        } else {
+                          ""
+                        };
+
+                        findings.push(LocalFinding {
+                          id: Uuid::new_v4().to_string(),
+                          category: "finance".to_string(),
+                          severity: if totals_differ { "high" } else { "medium" }.to_string(),
+                          title: "Duplicate invoice number detected".to_string(),
+                          summary: format!(
+                            "Two locally reviewed documents use invoice number {}.{}{}",
+                            invoice.invoice_number, amount_note, recurring_note
+                          ),
+                          evidence: format!("{} :: {}", first_path.display(), path.display()),
+                          remediation: "Compare both invoices and the corresponding payment records manually. Confirm whether this is a duplicate bill, a corrected invoice or an intentional copy before taking any action. CashPatch never pays, refunds, deletes or edits anything.".to_string(),
+                        });
+                      }
+                    } else {
+                      invoice_numbers.insert(
+                        invoice.invoice_number.clone(),
+                        (path.to_path_buf(), invoice.amount.clone()),
+                      );
+                    }
+                  }
+                }
               }
 
               if business_extension(path) && len > 0 && len <= CONTENT_HASH_MAX_BYTES {
