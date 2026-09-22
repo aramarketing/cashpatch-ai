@@ -1,0 +1,92 @@
+name: Agent Quick Scan Scope Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/agent-quickscan-scope.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Expand Quick Scan system scope
+        shell: python
+        run: |
+          from pathlib import Path
+
+          scan_path = Path('desktop/src-tauri/src/scan.rs')
+          app_path = Path('desktop/src/App.tsx')
+          test_path = Path('desktop/src/local-scan-contract.test.ts')
+
+          scan = scan_path.read_text()
+          old = '''  pub bytes_seen: u64,\n  pub permission_denied: u64,\n  pub truncated: bool,\n'''
+          new = '''  pub bytes_seen: u64,\n  pub permission_denied: u64,\n  pub installed_software_seen: u64,\n  pub running_processes_seen: u64,\n  pub network_interfaces_seen: u64,\n  pub autostart_entries_seen: u64,\n  pub truncated: bool,\n'''
+          if old not in scan:
+              raise SystemExit('QuickScanPlan field anchor missing')
+          scan = scan.replace(old, new, 1)
+
+          old = '''    let estimated = estimate_full_seconds(files, bytes);\n    let plan = QuickScanPlan {\n'''
+          new = '''    if let Ok(mut state) = runtime().lock() {\n      state.snapshot.current_item = Some("System inventory: programs, processes, network interfaces and autostart".to_string());\n    }\n    emit_snapshot(&app_for_thread);\n    let inventory = crate::inventory::collect_system_inventory();\n\n    let estimated = estimate_full_seconds(files, bytes);\n    let plan = QuickScanPlan {\n'''
+          if old not in scan:
+              raise SystemExit('QuickScanPlan creation anchor missing')
+          scan = scan.replace(old, new, 1)
+
+          old = '''      bytes_seen: bytes,\n      permission_denied: denied,\n      truncated,\n'''
+          new = '''      bytes_seen: bytes,\n      permission_denied: denied,\n      installed_software_seen: inventory.installed_software.len() as u64,\n      running_processes_seen: inventory.running_processes.len() as u64,\n      network_interfaces_seen: inventory.network_interfaces.len() as u64,\n      autostart_entries_seen: inventory.autostart_entries.len() as u64,\n      truncated,\n'''
+          if old not in scan:
+              raise SystemExit('QuickScanPlan literal anchor missing')
+          scan = scan.replace(old, new, 1)
+          scan_path.write_text(scan)
+
+          app = app_path.read_text()
+          old = '''  bytesSeen: number\n  permissionDenied: number\n  truncated: boolean\n'''
+          new = '''  bytesSeen: number\n  permissionDenied: number\n  installedSoftwareSeen: number\n  runningProcessesSeen: number\n  networkInterfacesSeen: number\n  autostartEntriesSeen: number\n  truncated: boolean\n'''
+          if old not in app:
+              raise SystemExit('QuickScanPlan TS type anchor missing')
+          app = app.replace(old, new, 1)
+
+          old = '''          </div>\n          <p>{scanSnapshot.quickPlan.permissionDenied\n            ? `${scanSnapshot.quickPlan.permissionDenied} locations could not be read with current OS permissions. CashPatch will not bypass them.`\n            : 'No permission boundary was encountered in the mapped scope.'}</p>\n'''
+          new = '''          </div>\n          <div className="trust">\n            <div><strong>{scanSnapshot.quickPlan.installedSoftwareSeen.toLocaleString()}</strong><span>installed programs</span></div>\n            <div><strong>{scanSnapshot.quickPlan.runningProcessesSeen.toLocaleString()}</strong><span>running processes</span></div>\n            <div><strong>{scanSnapshot.quickPlan.autostartEntriesSeen.toLocaleString()}</strong><span>autostart entries</span></div>\n          </div>\n          <p className="muted">{scanSnapshot.quickPlan.networkInterfacesSeen.toLocaleString()} network interfaces mapped · {connectedSources.length.toLocaleString()} connected review-only online sources · {availableAi.length.toLocaleString()} local AI runtimes available.</p>\n          <p>{scanSnapshot.quickPlan.permissionDenied\n            ? `${scanSnapshot.quickPlan.permissionDenied} locations could not be read with current OS permissions. CashPatch will not bypass them.`\n            : 'No permission boundary was encountered in the mapped scope.'}</p>\n'''
+          if old not in app:
+              raise SystemExit('Quick Scan summary UI anchor missing')
+          app = app.replace(old, new, 1)
+          app_path.write_text(app)
+
+          test = test_path.read_text()
+          anchor = '''  it('surfaces crash-safe recovery and local scan history without automatic resume', () => {\n'''
+          addition = '''  it('includes native system scope in Quick Scan before Full Scan confirmation', () => {\n    const app = readRepoFile('desktop/src/App.tsx')\n    const scan = readRepoFile('desktop/src-tauri/src/scan.rs')\n\n    expect(scan).toContain('let inventory = crate::inventory::collect_system_inventory()')\n    expect(scan).toContain('installed_software_seen: inventory.installed_software.len() as u64')\n    expect(scan).toContain('running_processes_seen: inventory.running_processes.len() as u64')\n    expect(scan).toContain('network_interfaces_seen: inventory.network_interfaces.len() as u64')\n    expect(scan).toContain('autostart_entries_seen: inventory.autostart_entries.len() as u64')\n    expect(app).toContain('installedSoftwareSeen')\n    expect(app).toContain('runningProcessesSeen')\n    expect(app).toContain('networkInterfacesSeen')\n    expect(app).toContain('autostartEntriesSeen')\n    expect(app).toContain('connected review-only online sources')\n  })\n\n'''
+          if anchor not in test:
+              raise SystemExit('test insertion anchor missing')
+          test = test.replace(anchor, addition + anchor, 1)
+          test_path.write_text(test)
+
+      - name: Validate desktop contract tests
+        working-directory: desktop
+        run: |
+          npm install
+          npm test
+
+      - name: Commit integration
+        run: |
+          git diff --check
+          if git diff --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+          git config user.name "CashPatch Agent"
+          git config user.email "61079904+aramarketing@users.noreply.github.com"
+          git add desktop/src-tauri/src/scan.rs desktop/src/App.tsx desktop/src/local-scan-contract.test.ts
+          git commit -m "Expand Quick Scan with native system scope"
+          git push origin main
