@@ -1,3 +1,6 @@
+#[path = "vulnerability.rs"]
+mod vulnerability;
+
 use serde::Serialize;
 use std::{collections::BTreeSet, fs, path::PathBuf};
 use sysinfo::{Disks, Networks, System};
