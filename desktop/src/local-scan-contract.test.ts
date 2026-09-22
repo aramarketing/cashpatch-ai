@@ -75,7 +75,12 @@ describe('local scan consent and privacy contracts', () => {
     expect(app).toContain('runningProcessesSeen')
     expect(app).toContain('networkInterfacesSeen')
     expect(app).toContain('autostartEntriesSeen')
+    expect(app).toContain('installed programs')
+    expect(app).toContain('running processes')
+    expect(app).toContain('autostart entries')
+    expect(app).toContain('network interfaces mapped')
     expect(app).toContain('connected review-only online sources')
+    expect(app).toContain('local AI runtimes available')
   })
 
   it('surfaces crash-safe recovery and local scan history without automatic resume', () => {
