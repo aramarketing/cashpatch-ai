@@ -1,4 +1,7 @@
+mod conversation_review;
+mod conversations;
 mod egress;
+mod inventory;
 mod scan;
 mod vault;
 use keyring::Entry;
@@ -524,8 +527,6 @@ async fn entitlement_check(app: tauri::AppHandle) -> Result<EntitlementPublic, S
   })
 }
 
-
-
 #[tauri::command]
 async fn cloud_sources(app: tauri::AppHandle) -> Result<Vec<CloudSource>, String> {
   let device_id = secret_get("cloud-device-id").ok_or("Device is not paired")?;
@@ -619,6 +620,7 @@ pub fn run() {
     })
     .on_window_event(|window, event| {
       if let WindowEvent::CloseRequested { api, .. } = event {
+        let _ = scan::scan_cancel();
         api.prevent_close();
         let _ = window.hide();
       }
@@ -635,6 +637,8 @@ pub fn run() {
       approved_folder_get,
       approved_folder_set,
       approved_folder_clear,
+      inventory::system_inventory,
+      conversation_review::conversation_review_import,
       scan::quick_scan_start,
       scan::full_scan_start,
       scan::scan_status,
