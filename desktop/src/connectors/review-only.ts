@@ -86,7 +86,7 @@ export const assertReviewOnlyManifest = (
   return manifest
 }
 
-export const REVIEW_ONLY_CONNECTORS: readonly ReviewOnlyConnectorManifest[] = [
+const BUILT_IN_CONNECTORS = [
   {
     key: 'gmail',
     displayName: 'Gmail',
@@ -162,7 +162,10 @@ export const REVIEW_ONLY_CONNECTORS: readonly ReviewOnlyConnectorManifest[] = [
     externalWriteAllowed: false,
     notes: 'Only user-approved exports or legitimate read-only provider access. No browser-session or credential extraction.',
   },
-].map(assertReviewOnlyManifest)
+] satisfies readonly ReviewOnlyConnectorManifest[]
+
+export const REVIEW_ONLY_CONNECTORS: readonly ReviewOnlyConnectorManifest[] =
+  BUILT_IN_CONNECTORS.map(manifest => assertReviewOnlyManifest(manifest))
 
 export const manifestForConnector = (key: string) =>
   REVIEW_ONLY_CONNECTORS.find(manifest => manifest.key === key) ?? null
