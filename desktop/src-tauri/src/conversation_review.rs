@@ -1,4 +1,6 @@
 use crate::conversations::load_user_selected_export;
+#[path = "local_ai.rs"]
+mod local_ai;
 use serde::Serialize;
 use std::path::Path;
 use uuid::Uuid;
@@ -208,8 +210,75 @@ pub fn analyze_user_selected_export(path: &Path) -> Result<ConversationReview, S
   })
 }
 
+async fn enrich_with_available_local_ai(path: &Path, review: &mut ConversationReview) {
+  if review.findings.len() >= MAX_FINDINGS {
+    return;
+  }
+
+  let imported = match load_user_selected_export(path) {
+    Ok(imported) => imported,
+    Err(_) => return,
+  };
+
+  let mut text = String::new();
+  for message in imported.messages.iter().take(400) {
+    let role = if message.role.trim().is_empty() { "unknown" } else { message.role.as_str() };
+    text.push_str(role);
+    text.push_str(": ");
+    text.push_str(&message.text);
+    text.push('\n');
+    if text.chars().count() >= 12_000 {
+      break;
+    }
+  }
+
+  if text.trim().is_empty() {
+    return;
+  }
+
+  for provider in ["ollama", "lm-studio"] {
+    let models = match local_ai::local_ai_models(provider.to_string(), None).await {
+      Ok(models) if !models.is_empty() => models,
+      _ => continue,
+    };
+    let model = models[0].id.clone();
+    let analysis = match local_ai::local_ai_analyze_text(
+      provider.to_string(),
+      None,
+      model,
+      text.clone(),
+      Some("Review this user-approved AI conversation export for contradictions, unresolved tasks, financial or contractual risk, security concerns, duplicated work, likely cost waste, and statements that require human verification.".to_string()),
+      true,
+    )
+    .await
+    {
+      Ok(analysis) => analysis,
+      Err(_) => continue,
+    };
+
+    for finding in analysis.findings {
+      if review.findings.len() >= MAX_FINDINGS {
+        review.truncated = true;
+        break;
+      }
+      review.findings.push(ConversationReviewFinding {
+        id: Uuid::new_v4().to_string(),
+        category: finding.category,
+        severity: finding.severity,
+        confidence: finding.confidence,
+        title: format!("Local AI: {}", finding.title),
+        summary: finding.summary,
+        evidence: finding.evidence,
+        remediation: finding.remediation,
+      });
+    }
+    review.truncated = review.truncated || analysis.input_truncated;
+    break;
+  }
+}
+
 #[tauri::command]
-pub fn conversation_review_import(path: String, consent: bool) -> Result<ConversationReview, String> {
+pub async fn conversation_review_import(path: String, consent: bool) -> Result<ConversationReview, String> {
   if !consent {
     return Err("Explicit consent is required before reviewing an AI conversation export".to_string());
   }
@@ -219,5 +288,7 @@ pub fn conversation_review_import(path: String, consent: bool) -> Result<Convers
     return Err("Select a local conversation export first".to_string());
   }
 
-  analyze_user_selected_export(path)
+  let mut review = analyze_user_selected_export(path)?;
+  enrich_with_available_local_ai(path, &mut review).await;
+  Ok(review)
 }
