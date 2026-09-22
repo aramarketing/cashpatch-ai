@@ -170,7 +170,7 @@ fn parse_findings(content: &str) -> Result<Vec<LocalAiFinding>, String> {
 
   let mut findings = Vec::new();
   for item in items.iter().take(MAX_FINDINGS) {
-    let category = item.get("category").and_then(Value::as_str).unwrap_or("general");
+    let category = sanitize_field(item.get("category").and_then(Value::as_str).unwrap_or("general"));
     let severity_raw = item.get("severity").and_then(Value::as_str).unwrap_or("info").to_ascii_lowercase();
     let severity = match severity_raw.as_str() {
       "info" | "low" | "medium" | "high" | "critical" => severity_raw,
