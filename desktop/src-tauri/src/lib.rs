@@ -638,6 +638,8 @@ pub fn run() {
       approved_folder_set,
       approved_folder_clear,
       inventory::system_inventory,
+      inventory::vulnerability::vulnerability_database_status,
+      inventory::vulnerability::vulnerability_scan,
       conversation_review::conversation_review_import,
       scan::quick_scan_start,
       scan::full_scan_start,
