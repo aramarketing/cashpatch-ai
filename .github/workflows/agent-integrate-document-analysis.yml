@@ -2,9 +2,10 @@ name: Agent Integrate Document Analysis
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - ".github/workflows/agent-integrate-document-analysis.yml"
+      - .github/workflows/agent-integrate-document-analysis.yml
 
 permissions:
   contents: write
@@ -19,8 +20,10 @@ jobs:
           fetch-depth: 0
 
       - name: Integrate local document signals into Full Scan
-        shell: python
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 <<'PY'
           from pathlib import Path
 
           path = Path("desktop/src-tauri/src/scan.rs")
@@ -28,21 +31,24 @@ jobs:
 
           old = "collections::{BTreeMap, HashMap},"
           new = "collections::{BTreeMap, HashMap, HashSet},"
-          if old not in text:
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
               raise SystemExit("scan.rs collection import anchor missing")
-          text = text.replace(old, new, 1)
 
           old = '#[path = "scan_journal.rs"]\nmod scan_journal;\n'
           new = '#[path = "scan_journal.rs"]\nmod scan_journal;\n#[path = "document_analysis.rs"]\nmod document_analysis;\n'
-          if old not in text:
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'mod document_analysis;' not in text:
               raise SystemExit("scan journal module anchor missing")
-          text = text.replace(old, new, 1)
 
           old = "    let mut duplicate_groups = BTreeMap::<String, u64>::new();\n    let mut findings = Vec::<LocalFinding>::new();\n"
           new = "    let mut duplicate_groups = BTreeMap::<String, u64>::new();\n    let mut invoice_numbers = HashMap::<String, (PathBuf, Option<String>)>::new();\n    let mut reported_invoice_numbers = HashSet::<String>::new();\n    let mut findings = Vec::<LocalFinding>::new();\n"
-          if old not in text:
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'let mut invoice_numbers' not in text:
               raise SystemExit("full scan accumulator anchor missing")
-          text = text.replace(old, new, 1)
 
           anchor = "              if business_extension(path) && len > 0 && len <= CONTENT_HASH_MAX_BYTES {\n"
           insertion = '''              if business_extension(path) {
@@ -76,11 +82,7 @@ jobs:
                             "Two locally reviewed documents use invoice number {}.{}{}",
                             invoice.invoice_number, amount_note, recurring_note
                           ),
-                          evidence: format!(
-                            "{} :: {}",
-                            first_path.display(),
-                            path.display()
-                          ),
+                          evidence: format!("{} :: {}", first_path.display(), path.display()),
                           remediation: "Compare both invoices and the corresponding payment records manually. Confirm whether this is a duplicate bill, a corrected invoice or an intentional copy before taking any action. CashPatch never pays, refunds, deletes or edits anything.".to_string(),
                         });
                       }
@@ -95,11 +97,13 @@ jobs:
               }
 
 '''
-          if anchor not in text:
-              raise SystemExit("content hashing anchor missing")
-          text = text.replace(anchor, insertion + anchor, 1)
+          if 'document_analysis::analyze_document' not in text:
+              if anchor not in text:
+                  raise SystemExit("content hashing anchor missing")
+              text = text.replace(anchor, insertion + anchor, 1)
 
           path.write_text(text)
+          PY
 
       - name: Guard integration
         shell: bash
