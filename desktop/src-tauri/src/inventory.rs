@@ -220,7 +220,7 @@ fn collect_installed_software() -> Vec<InstalledSoftwareInventory> {
 
 #[cfg(target_os = "windows")]
 fn collect_windows_uninstall_key(
-  root: winreg::enums::HKEY,
+  root: winreg::HKEY,
   path: &str,
   software: &mut Vec<InstalledSoftwareInventory>,
   seen: &mut BTreeSet<String>,
