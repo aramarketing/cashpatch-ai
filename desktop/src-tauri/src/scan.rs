@@ -16,6 +16,9 @@ use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
+#[path = "scan_journal.rs"]
+mod scan_journal;
+
 const QUICK_MAX_ENTRIES: u64 = 500_000;
 const CONTENT_HASH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const PROGRESS_EVERY_FILES: u64 = 200;
@@ -67,6 +70,15 @@ pub struct ScanSnapshot {
   pub error: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStatusView {
+  #[serde(flatten)]
+  snapshot: ScanSnapshot,
+  recovery: scan_journal::ScanRecoveryStatus,
+  history: Vec<scan_journal::ScanHistoryEntry>,
+}
+
 struct ScanRuntime {
   snapshot: ScanSnapshot,
   started_at: Option<Instant>,
@@ -112,8 +124,14 @@ fn runtime() -> &'static Arc<Mutex<ScanRuntime>> {
 }
 
 fn emit_snapshot(app: &AppHandle) {
-  if let Ok(state) = runtime().lock() {
-    let _ = app.emit("scan-progress", state.snapshot.clone());
+  let payload = runtime()
+    .lock()
+    .ok()
+    .map(|state| (state.snapshot.clone(), state.roots.clone()));
+
+  if let Some((snapshot, roots)) = payload {
+    let _ = scan_journal::persist_snapshot(&snapshot, &roots);
+    let _ = app.emit("scan-progress", snapshot);
   }
 }
 
@@ -278,22 +296,57 @@ fn set_terminal_phase(app: &AppHandle, phase: &str) {
   emit_snapshot(app);
 }
 
-#[tauri::command]
-pub fn scan_status() -> ScanSnapshot {
-  runtime()
-    .lock()
-    .map(|state| state.snapshot.clone())
-    .unwrap_or_else(|_| ScanRuntime::default().snapshot)
+fn recovery_fallback(error: String) -> scan_journal::ScanRecoveryStatus {
+  scan_journal::ScanRecoveryStatus {
+    available: false,
+    previous_scan_id: None,
+    mode: None,
+    phase: None,
+    roots: Vec::new(),
+    files_seen: 0,
+    directories_seen: 0,
+    bytes_seen: 0,
+    progress_percent: 0.0,
+    saved_at_unix: None,
+    note: format!("Recovery journal is unavailable: {error}"),
+  }
 }
 
 #[tauri::command]
-pub fn quick_scan_start(app: AppHandle, consent: bool, extra_roots: Vec<String>) -> Result<String, String> {
+pub fn scan_status() -> ScanStatusView {
+  let snapshot = runtime()
+    .lock()
+    .map(|state| state.snapshot.clone())
+    .unwrap_or_else(|_| ScanRuntime::default().snapshot);
+  let recovery = scan_journal::recovery_status().unwrap_or_else(recovery_fallback);
+  let history = scan_journal::list_history().unwrap_or_default();
+
+  ScanStatusView {
+    snapshot,
+    recovery,
+    history,
+  }
+}
+
+#[tauri::command]
+pub fn quick_scan_start(
+  app: AppHandle,
+  consent: bool,
+  extra_roots: Vec<String>,
+  recover_interrupted: Option<bool>,
+) -> Result<String, String> {
   if !consent {
     return Err("Explicit scan consent is required".to_string());
   }
 
+  let requested_roots = if recover_interrupted.unwrap_or(false) {
+    scan_journal::recovery_roots()?
+  } else {
+    extra_roots
+  };
+
   let mut roots = default_roots();
-  for raw in extra_roots {
+  for raw in requested_roots {
     let path = PathBuf::from(raw);
     if path.exists() {
       roots.push(path);
@@ -737,4 +790,3 @@ pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
 
   std::fs::write(destination, body).map_err(|e| e.to_string())
 }
-
