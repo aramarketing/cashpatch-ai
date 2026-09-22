@@ -79,5 +79,4 @@ describe('local scan consent and privacy contracts', () => {
     expect(backend).toContain('scan::scan_discard_recovery,')
     expect(backend).toContain('scan::scan_clear_history,')
   })
-
 })
