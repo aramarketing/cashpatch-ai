@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 const appSource = readFileSync(fileURLToPath(new URL('./App.tsx', import.meta.url)), 'utf8')
 const notificationSource = readFileSync(fileURLToPath(new URL('./notifications.ts', import.meta.url)), 'utf8')
 const rustSource = readFileSync(fileURLToPath(new URL('../src-tauri/src/lib.rs', import.meta.url)), 'utf8')
+const scanSource = readFileSync(fileURLToPath(new URL('../src-tauri/src/scan.rs', import.meta.url)), 'utf8')
+const journalSource = readFileSync(fileURLToPath(new URL('../src-tauri/src/scan_journal.rs', import.meta.url)), 'utf8')
 
 describe('native desktop runtime contracts', () => {
   it('keeps the tray menu and close-to-tray behavior wired in the native shell', () => {
@@ -56,5 +58,15 @@ describe('native desktop runtime contracts', () => {
     expect(rustSource).toContain('http://127.0.0.1:1234/v1/models')
     expect(rustSource).not.toContain('http://0.0.0.0:11434')
     expect(rustSource).not.toContain('http://0.0.0.0:1234')
+  })
+
+  it('persists active scan snapshots and exposes recovery only through explicit consent', () => {
+    expect(scanSource).toContain('#[path = "scan_journal.rs"]')
+    expect(scanSource).toContain('scan_journal::persist_snapshot(&snapshot, &roots)')
+    expect(scanSource).toContain('recover_interrupted: Option<bool>')
+    expect(scanSource).toContain('scan_journal::recovery_roots()?')
+    expect(scanSource).toContain('Explicit scan consent is required')
+    expect(journalSource).toContain('only after explicit confirmation')
+    expect(journalSource).toContain('CashPatch restarts the same approved scope from the beginning')
   })
 })
