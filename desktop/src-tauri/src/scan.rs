@@ -33,6 +33,10 @@ pub struct QuickScanPlan {
   pub directories_seen: u64,
   pub bytes_seen: u64,
   pub permission_denied: u64,
+  pub installed_software_seen: u64,
+  pub running_processes_seen: u64,
+  pub network_interfaces_seen: u64,
+  pub autostart_entries_seen: u64,
   pub truncated: bool,
   pub estimated_full_seconds: u64,
   pub estimated_full_label: String,
@@ -456,6 +460,12 @@ pub fn quick_scan_start(
       }
     }
 
+    if let Ok(mut state) = runtime().lock() {
+      state.snapshot.current_item = Some("System inventory: programs, processes, network interfaces and autostart".to_string());
+    }
+    emit_snapshot(&app_for_thread);
+    let inventory = crate::inventory::collect_system_inventory();
+
     let estimated = estimate_full_seconds(files, bytes);
     let plan = QuickScanPlan {
       roots: roots.iter().map(|p| p.display().to_string()).collect(),
@@ -463,6 +473,10 @@ pub fn quick_scan_start(
       directories_seen: dirs,
       bytes_seen: bytes,
       permission_denied: denied,
+      installed_software_seen: inventory.installed_software.len() as u64,
+      running_processes_seen: inventory.running_processes.len() as u64,
+      network_interfaces_seen: inventory.network_interfaces.len() as u64,
+      autostart_entries_seen: inventory.autostart_entries.len() as u64,
       truncated,
       estimated_full_seconds: estimated,
       estimated_full_label: format_eta(estimated),

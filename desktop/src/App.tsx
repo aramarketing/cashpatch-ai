@@ -58,6 +58,10 @@ type QuickScanPlan = {
   directoriesSeen: number
   bytesSeen: number
   permissionDenied: number
+  installedSoftwareSeen: number
+  runningProcessesSeen: number
+  networkInterfacesSeen: number
+  autostartEntriesSeen: number
   truncated: boolean
   estimatedFullSeconds: number
   estimatedFullLabel: string
@@ -720,6 +724,12 @@ export default function App() {
             <div><strong>{formatBytes(scanSnapshot.quickPlan.bytesSeen)}</strong><span>reachable data</span></div>
             <div><strong>{scanSnapshot.quickPlan.estimatedFullLabel}</strong><span>estimated Full Scan</span></div>
           </div>
+          <div className="trust">
+            <div><strong>{scanSnapshot.quickPlan.installedSoftwareSeen.toLocaleString()}</strong><span>installed programs</span></div>
+            <div><strong>{scanSnapshot.quickPlan.runningProcessesSeen.toLocaleString()}</strong><span>running processes</span></div>
+            <div><strong>{scanSnapshot.quickPlan.autostartEntriesSeen.toLocaleString()}</strong><span>autostart entries</span></div>
+          </div>
+          <p className="muted">{scanSnapshot.quickPlan.networkInterfacesSeen.toLocaleString()} network interfaces mapped · {connectedSources.length.toLocaleString()} connected review-only online sources · {availableAi.length.toLocaleString()} local AI runtimes available.</p>
           <p>{scanSnapshot.quickPlan.permissionDenied
             ? `${scanSnapshot.quickPlan.permissionDenied} locations could not be read with current OS permissions. CashPatch will not bypass them.`
             : 'No permission boundary was encountered in the mapped scope.'}</p>
