@@ -39,7 +39,7 @@ fn amount_regex() -> &'static Regex {
   static REGEX: OnceLock<Regex> = OnceLock::new();
   REGEX.get_or_init(|| {
     Regex::new(
-      r"(?i)(?:gesamtbetrag|rechnungsbetrag|zu\s+zahlen|summe|total|amount\s+due)\s*[:=-]?\s*(?:eur|€)?\s*([0-9][0-9.\s']*(?:,[0-9]{2}|\.[0-9]{2}))\s*(?:eur|€)?",
+      r"(?i)(?:gesamtbetrag|rechnungsbetrag|zu\s+zahlen|summe|total|amount\s+due)\s*[:=-]?\s*(?:eur|€)?\s*([0-9][0-9., ']*[.,][0-9]{2})\s*(?:eur|€)?",
     )
     .expect("invoice amount regex must compile")
   })
