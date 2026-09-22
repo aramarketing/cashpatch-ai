@@ -1,5 +1,5 @@
 #[path = "vulnerability.rs"]
-mod vulnerability;
+pub(crate) mod vulnerability;
 
 use serde::Serialize;
 use std::{collections::BTreeSet, fs, path::PathBuf};
