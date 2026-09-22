@@ -109,6 +109,38 @@ type ScanSnapshot = {
   error?: string | null
 }
 
+type ScanRecovery = {
+  available: boolean
+  previousScanId?: string | null
+  mode?: string | null
+  phase?: string | null
+  roots: string[]
+  filesSeen: number
+  directoriesSeen: number
+  bytesSeen: number
+  progressPercent: number
+  savedAtUnix?: number | null
+  note: string
+}
+
+type ScanHistoryEntry = {
+  scanId: string
+  mode: string
+  status: string
+  filesSeen: number
+  directoriesSeen: number
+  bytesSeen: number
+  permissionDenied: number
+  findingsCount: number
+  elapsedSeconds: number
+  finishedAtUnix: number
+}
+
+type ScanStatusView = ScanSnapshot & {
+  recovery: ScanRecovery
+  history: ScanHistoryEntry[]
+}
+
 type Phase = 'booting' | 'unpaired' | 'pairing' | 'blocked' | 'ready' | 'error'
 type Section = 'watchtower' | 'scan' | 'findings' | 'sources' | 'permissions' | 'ai' | 'vault' | 'activity' | 'subscription' | 'settings'
 
@@ -128,6 +160,8 @@ const formatEta = (seconds?: number | null) => {
   return `${Math.ceil(seconds / 3600)} h`
 }
 
+
+const formatHistoryTime = (unix: number) => new Date(unix * 1000).toLocaleString()
 
 const navigation: Array<[Section, string]> = [
   ['watchtower', 'Watchtower'],
@@ -163,6 +197,10 @@ export default function App() {
   const [approvedFolder, setApprovedFolder] = useState<string | null>(null)
   const [connectedSources, setConnectedSources] = useState<CloudSource[]>([])
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
+  const [scanRecovery, setScanRecovery] = useState<ScanRecovery | null>(null)
+  const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([])
+  const [recoveryConsent, setRecoveryConsent] = useState(false)
+  const [activityMessage, setActivityMessage] = useState('')
   const [quickConsent, setQuickConsent] = useState(false)
   const [fullConsent, setFullConsent] = useState(false)
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null)
@@ -207,6 +245,19 @@ export default function App() {
     setApprovedFolder(folder)
   }
 
+  const applyScanStatus = (status: ScanStatusView) => {
+    const { recovery, history, ...snapshot } = status
+    setScanSnapshot(snapshot)
+    setScanRecovery(recovery)
+    setScanHistory(history)
+  }
+
+  const refreshScanState = async () => {
+    const status = await invoke<ScanStatusView>('scan_status')
+    applyScanStatus(status)
+    return status
+  }
+
   const refreshBusinessSources = async () => {
     const sources = await invoke<CloudSource[]>('cloud_sources').catch(() => [])
     setConnectedSources(sources)
@@ -216,8 +267,8 @@ export default function App() {
     let disposed = false
     let stopListening: (() => void) | undefined
 
-    invoke<ScanSnapshot>('scan_status').then(snapshot => {
-      if (!disposed) setScanSnapshot(snapshot)
+    invoke<ScanStatusView>('scan_status').then(status => {
+      if (!disposed) applyScanStatus(status)
     }).catch(() => {})
 
     listen<ScanSnapshot>('scan-progress', event => {
@@ -232,6 +283,11 @@ export default function App() {
       stopListening?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (!scanSnapshot || !['completed', 'cancelled', 'failed'].includes(scanSnapshot.phase)) return
+    refreshScanState().catch(() => {})
+  }, [scanSnapshot?.phase])
 
   useEffect(() => {
     invoke<VaultStatus>('vault_status')
@@ -344,7 +400,28 @@ export default function App() {
     if (!quickConsent) return
     setSection('scan')
     const extraRoots = approvedFolder ? [approvedFolder] : []
-    await invoke<string>('quick_scan_start', { consent: true, extraRoots })
+    await invoke<string>('quick_scan_start', { consent: true, extraRoots, recoverInterrupted: false })
+  }
+
+  const resumeInterruptedScan = async () => {
+    if (!recoveryConsent || !scanRecovery?.available) return
+    setSection('scan')
+    await invoke<string>('quick_scan_start', { consent: true, extraRoots: [], recoverInterrupted: true })
+    setRecoveryConsent(false)
+    setActivityMessage('Interrupted scope restarted after explicit confirmation.')
+  }
+
+  const discardInterruptedScan = async () => {
+    await invoke('scan_discard_recovery')
+    setRecoveryConsent(false)
+    setActivityMessage('Interrupted scan journal discarded locally.')
+    await refreshScanState()
+  }
+
+  const clearScanHistory = async () => {
+    await invoke('scan_clear_history')
+    setActivityMessage('Local scan history cleared.')
+    await refreshScanState()
   }
 
   const startFullScan = async () => {
@@ -596,6 +673,21 @@ export default function App() {
         <p className="eyebrow">LOCAL REVIEW-ONLY SCAN</p>
         <h2>Scan deeply. Change nothing.</h2>
         <p className="muted">CashPatch scans only after your explicit consent. Quick Scan inventories scope and estimates the Full Scan. Full Scan requires a second confirmation.</p>
+
+        {scanRecovery?.available && (!scanSnapshot || !['quick_scanning', 'full_scanning'].includes(scanSnapshot.phase)) && <div className="permission-list">
+          <article>
+            <div>
+              <b>Interrupted scan found</b>
+              <small>{scanRecovery.note}</small>
+              <small>{scanRecovery.filesSeen.toLocaleString()} files mapped · {scanRecovery.progressPercent.toFixed(1)}% recorded{scanRecovery.savedAtUnix ? ` · ${formatHistoryTime(scanRecovery.savedAtUnix)}` : ''}</small>
+            </div>
+            <label><input type="checkbox" checked={recoveryConsent} onChange={e => setRecoveryConsent(e.target.checked)} /> Restart the same approved scope locally</label>
+            <div className="button-row">
+              <button disabled={!recoveryConsent} onClick={resumeInterruptedScan}>Resume safely</button>
+              <button className="secondary" onClick={discardInterruptedScan}>Discard journal</button>
+            </div>
+          </article>
+        </div>}
 
         {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled') && <>
           <div className="permission-list">
@@ -863,10 +955,26 @@ export default function App() {
         {vaultMessage && <p className="status">{vaultMessage}</p>}
       </section>}
 
-      {section === 'activity' && <section className="panel empty">
-        <div className="orb">✓</div>
-        <h2>No review activity yet.</h2>
-        <p>The audit trail will record reads, syncs and analyses — never external changes.</p>
+      {section === 'activity' && <section className="panel">
+        <p className="eyebrow">LOCAL SCAN HISTORY</p>
+        <h2>What CashPatch reviewed.</h2>
+        <p className="muted">Stored locally with restricted file permissions. History records scan metadata only — never passwords or full document contents.</p>
+        {scanRecovery?.available && <p className="status">An interrupted scan is waiting for explicit recovery confirmation in the Scan section.</p>}
+        <div className="permission-list">
+          {scanHistory.map(entry => <article key={entry.scanId}>
+            <div>
+              <b>{entry.status.replaceAll('_', ' ')} · {entry.mode}</b>
+              <small>{formatHistoryTime(entry.finishedAtUnix)} · {entry.filesSeen.toLocaleString()} files · {formatBytes(entry.bytesSeen)} · {entry.findingsCount} findings · {entry.permissionDenied} permission limits</small>
+              <small>Duration {formatEta(entry.elapsedSeconds)} · Scan ID {entry.scanId}</small>
+            </div>
+          </article>)}
+          {!scanHistory.length && <article><div><b>No completed scan history yet</b><small>Completed, cancelled and failed scans will appear here.</small></div></article>}
+        </div>
+        <div className="button-row">
+          <button className="secondary" onClick={() => refreshScanState().then(() => setActivityMessage('Local scan history refreshed.'))}>Refresh history</button>
+          <button className="secondary" disabled={!scanHistory.length} onClick={clearScanHistory}>Clear local history</button>
+        </div>
+        {activityMessage && <p className="status">{activityMessage}</p>}
       </section>}
 
       {section === 'subscription' && <section className="panel">

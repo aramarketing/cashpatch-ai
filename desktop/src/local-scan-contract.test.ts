@@ -61,4 +61,23 @@ describe('local scan consent and privacy contracts', () => {
     expect(egress).toContain('http://[::1]:8080/health')
     expect(egress).toContain('Local AI must use a loopback address')
   })
+
+  it('surfaces crash-safe recovery and local scan history without automatic resume', () => {
+    const app = readRepoFile('desktop/src/App.tsx')
+    const scan = readRepoFile('desktop/src-tauri/src/scan.rs')
+    const journal = readRepoFile('desktop/src-tauri/src/scan_journal.rs')
+    const backend = readRepoFile('desktop/src-tauri/src/lib.rs')
+
+    expect(app).toContain('Interrupted scan found')
+    expect(app).toContain('Restart the same approved scope locally')
+    expect(app).toContain("recoverInterrupted: true")
+    expect(app).toContain('LOCAL SCAN HISTORY')
+    expect(scan).toContain('pub fn scan_discard_recovery()')
+    expect(scan).toContain('pub fn scan_clear_history()')
+    expect(journal).toContain('MAX_HISTORY_ENTRIES: usize = 50')
+    expect(journal).toContain('Permissions::from_mode(0o600)')
+    expect(backend).toContain('scan::scan_discard_recovery,')
+    expect(backend).toContain('scan::scan_clear_history,')
+  })
+
 })

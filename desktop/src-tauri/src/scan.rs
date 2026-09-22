@@ -726,6 +726,16 @@ pub fn scan_cancel() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn scan_discard_recovery() -> Result<(), String> {
+  scan_journal::discard_recovery()
+}
+
+#[tauri::command]
+pub fn scan_clear_history() -> Result<(), String> {
+  scan_journal::clear_history()
+}
+
+#[tauri::command]
 pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
   let destination = PathBuf::from(path);
   if destination.as_os_str().is_empty() {
