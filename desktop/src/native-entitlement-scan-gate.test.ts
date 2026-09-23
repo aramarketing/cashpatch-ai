@@ -7,6 +7,11 @@ const rustSource = readFileSync(
   'utf8',
 ).replace(/\r\n/g, '\n')
 
+const scanSource = readFileSync(
+  fileURLToPath(new URL('../src-tauri/src/scan.rs', import.meta.url)),
+  'utf8',
+).replace(/\r\n/g, '\n')
+
 describe('native entitlement scan gate', () => {
   it('requires an active paired entitlement before Quick Scan and Full Scan enter the scanner', () => {
     expect(rustSource).toContain('async fn require_active_entitlement(app: &tauri::AppHandle) -> Result<(), String>')
@@ -40,5 +45,12 @@ describe('native entitlement scan gate', () => {
     expect(handler).toContain('full_scan_start,')
     expect(handler).not.toContain('scan::quick_scan_start')
     expect(handler).not.toContain('scan::full_scan_start')
+  })
+
+  it('keeps the scan engine entrypoints internal so Tauri cannot register an unchecked duplicate command', () => {
+    expect(scanSource).toContain('pub fn quick_scan_start(')
+    expect(scanSource).toContain('pub fn full_scan_start(')
+    expect(scanSource).not.toContain('#[tauri::command]\npub fn quick_scan_start(')
+    expect(scanSource).not.toContain('#[tauri::command]\npub fn full_scan_start(')
   })
 })
