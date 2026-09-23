@@ -62,6 +62,7 @@ type QuickScanPlan = {
   runningProcessesSeen: number
   networkInterfacesSeen: number
   autostartEntriesSeen: number
+  securityChecksSeen: number
   truncated: boolean
   estimatedFullSeconds: number
   estimatedFullLabel: string
@@ -98,6 +99,26 @@ type VulnerabilityFinding = {
   summary: string
   reference?: string | null
   confidence: string
+}
+
+type SecurityPostureCheck = {
+  id: string
+  category: string
+  title: string
+  status: 'pass' | 'warning' | 'unknown'
+  severity: string
+  confidence: number
+  summary: string
+  evidence: string
+  remediation: string
+}
+
+type SecurityPostureReport = {
+  platform: string
+  checks: SecurityPostureCheck[]
+  passed: number
+  warnings: number
+  unknown: number
 }
 
 type VaultStatus = {
@@ -227,6 +248,8 @@ export default function App() {
   const [vulnerabilityStatus, setVulnerabilityStatus] = useState<VulnerabilityDatabaseStatus | null>(null)
   const [vulnerabilityFindings, setVulnerabilityFindings] = useState<VulnerabilityFinding[]>([])
   const [securityMessage, setSecurityMessage] = useState('')
+  const [securityPosture, setSecurityPosture] = useState<SecurityPostureReport | null>(null)
+  const [securityPostureMessage, setSecurityPostureMessage] = useState('')
   const [scanSnapshot, setScanSnapshot] = useState<ScanSnapshot | null>(null)
   const [scanRecovery, setScanRecovery] = useState<ScanRecovery | null>(null)
   const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([])
@@ -310,6 +333,19 @@ export default function App() {
         : 'No installed-software vulnerability matches were found in the current local database.')
     } catch (error) {
       setSecurityMessage(String(error))
+    }
+  }
+
+  const runSecurityPostureReview = async () => {
+    setSecurityPostureMessage('Reading supported operating-system security settings locally…')
+    try {
+      const report = await invoke<SecurityPostureReport>('security_posture_scan')
+      setSecurityPosture(report)
+      setSecurityPostureMessage(report.warnings
+        ? `${report.warnings} security posture warning${report.warnings === 1 ? '' : 's'} need human review.`
+        : 'No warning was found in the supported readable security settings.')
+    } catch (error) {
+      setSecurityPostureMessage(String(error))
     }
   }
 
@@ -776,7 +812,7 @@ export default function App() {
             <div><strong>{scanSnapshot.quickPlan.runningProcessesSeen.toLocaleString()}</strong><span>running processes</span></div>
             <div><strong>{scanSnapshot.quickPlan.autostartEntriesSeen.toLocaleString()}</strong><span>autostart entries</span></div>
           </div>
-          <p className="muted">{scanSnapshot.quickPlan.networkInterfacesSeen.toLocaleString()} network interfaces mapped · {connectedSources.length.toLocaleString()} connected review-only online sources · {availableAi.length.toLocaleString()} local AI runtimes available.</p>
+          <p className="muted">{scanSnapshot.quickPlan.networkInterfacesSeen.toLocaleString()} network interfaces mapped · {scanSnapshot.quickPlan.securityChecksSeen.toLocaleString()} local security settings checked · {connectedSources.length.toLocaleString()} connected review-only online sources · {availableAi.length.toLocaleString()} local AI runtimes available.</p>
           <p>{scanSnapshot.quickPlan.permissionDenied
             ? `${scanSnapshot.quickPlan.permissionDenied} locations could not be read with current OS permissions. CashPatch will not bypass them.`
             : 'No permission boundary was encountered in the mapped scope.'}</p>
@@ -907,6 +943,33 @@ export default function App() {
         <p className="eyebrow">SECURITY / VULNERABILITIES</p>
         <h2>Known software risks, checked locally.</h2>
         <p className="muted">CashPatch compares installed application names and versions only with a verified local vulnerability database. Your software inventory is never uploaded for this check.</p>
+        <div className="permission-list">
+          <article>
+            <div>
+              <b>Operating-system security posture</b>
+              <small>Read-only checks for supported firewall, login, screen-lock, endpoint-protection and legacy-protocol settings. CashPatch never changes these settings and never bypasses OS permissions.</small>
+            </div>
+            <button onClick={runSecurityPostureReview}>Run local posture check</button>
+          </article>
+        </div>
+        {securityPostureMessage && <p className="status">{securityPostureMessage}</p>}
+        {securityPosture && <>
+          <div className="trust">
+            <div><strong>{securityPosture.passed}</strong><span>supported checks passed</span></div>
+            <div><strong>{securityPosture.warnings}</strong><span>warnings</span></div>
+            <div><strong>{securityPosture.unknown}</strong><span>unknown / permission limited</span></div>
+          </div>
+          <div className="local-findings">
+            {securityPosture.checks.map(item => <article className="local-finding" key={item.id}>
+              <div className="local-finding-top"><span>{item.category}</span><strong>{item.status}</strong></div>
+              <h3>{item.title}</h3>
+              <div className="status-line"><span>Confidence</span><strong>{item.confidence}%</strong></div>
+              <p>{item.summary}</p>
+              <small>Evidence: {item.evidence}</small>
+              <div className="local-next"><span>{item.status === 'warning' ? 'RECOMMENDED HUMAN ACTION' : 'REVIEW NOTE'}</span><b>{item.remediation}</b></div>
+            </article>)}
+          </div>
+        </>}
         <div className="permission-list">
           <article>
             <div>

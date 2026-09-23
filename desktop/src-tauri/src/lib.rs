@@ -4,6 +4,7 @@ mod egress;
 mod inventory;
 mod local_ai;
 mod scan;
+mod security_posture;
 mod vault;
 use keyring::Entry;
 use reqwest::StatusCode;
@@ -673,6 +674,7 @@ pub fn run() {
       inventory::system_inventory,
       inventory::vulnerability::vulnerability_database_status,
       inventory::vulnerability::vulnerability_scan,
+      security_posture::security_posture_scan,
       conversation_review::conversation_review_import,
       quick_scan_start,
       full_scan_start,

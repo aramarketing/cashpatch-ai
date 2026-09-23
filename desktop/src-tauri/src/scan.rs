@@ -37,6 +37,7 @@ pub struct QuickScanPlan {
   pub running_processes_seen: u64,
   pub network_interfaces_seen: u64,
   pub autostart_entries_seen: u64,
+  pub security_checks_seen: u64,
   pub truncated: bool,
   pub estimated_full_seconds: u64,
   pub estimated_full_label: String,
@@ -591,6 +592,7 @@ pub fn quick_scan_start(
     }
     emit_snapshot(&app_for_thread);
     let inventory = crate::inventory::collect_system_inventory();
+    let security_posture = crate::security_posture::collect_security_posture();
 
     let estimated = estimate_full_seconds(files, bytes);
     let plan = QuickScanPlan {
@@ -603,6 +605,7 @@ pub fn quick_scan_start(
       running_processes_seen: inventory.running_processes.len() as u64,
       network_interfaces_seen: inventory.network_interfaces.len() as u64,
       autostart_entries_seen: inventory.autostart_entries.len() as u64,
+      security_checks_seen: security_posture.checks.len() as u64,
       truncated,
       estimated_full_seconds: estimated,
       estimated_full_label: format_eta(estimated),
@@ -911,6 +914,19 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
           ),
         });
       }
+    }
+
+    let security_posture = crate::security_posture::collect_security_posture();
+    for posture in security_posture.checks.into_iter().filter(|item| item.status == "warning") {
+      findings.push(LocalFinding {
+        id: Uuid::new_v4().to_string(),
+        category: format!("security_posture:{}", posture.category),
+        severity: posture.severity,
+        title: posture.title,
+        summary: posture.summary,
+        evidence: posture.evidence,
+        remediation: posture.remediation,
+      });
     }
 
     if denied > 0 {
