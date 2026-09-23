@@ -272,3 +272,7 @@ CI and E2E must continuously prove:
 - native Windows installer installs/runs/uninstalls;
 - native macOS DMG verifies/copies/signature-checks/runs;
 - no damaged/beschädigt Gatekeeper class failure is accepted as PASS.
+
+### Full Scan semantic review implementation
+
+The confirmed Full Scan now discovers the first available local-only runtime (Ollama, LM Studio, configured Jev, then configured custom local endpoint) once per scan and may enrich supported business-document findings locally. Sensitive credential-named files are deliberately excluded from model review. The deterministic scan remains authoritative, model findings are advisory and evidence-bounded, and no cloud fallback exists. A per-scan document ceiling protects CPU/RAM/IO on very large estates while deterministic collection continues across the approved scope.

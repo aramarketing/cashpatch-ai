@@ -292,6 +292,78 @@ fn sensitive_filename(path: &Path) -> bool {
     .any(|needle| name.contains(needle))
 }
 
+const MAX_LOCAL_AI_DOCUMENTS_PER_SCAN: u64 = 2_500;
+
+#[derive(Clone)]
+struct FullScanLocalAi {
+  provider: String,
+  endpoint: Option<String>,
+  model: String,
+}
+
+fn discover_full_scan_local_ai() -> Option<FullScanLocalAi> {
+  let mut candidates = vec![
+    ("ollama".to_string(), None),
+    ("lm-studio".to_string(), None),
+  ];
+
+  if let Some(endpoint) = crate::secret_get("local-ai-jev-endpoint") {
+    candidates.push(("jev".to_string(), Some(endpoint)));
+  }
+  if let Some(endpoint) = crate::secret_get("local-ai-custom-endpoint") {
+    candidates.push(("custom-local".to_string(), Some(endpoint)));
+  }
+
+  for (provider, endpoint) in candidates {
+    let models = tauri::async_runtime::block_on(crate::local_ai::local_ai_models(
+      provider.clone(),
+      endpoint.clone(),
+    ));
+    if let Ok(models) = models {
+      if let Some(model) = models.into_iter().next() {
+        return Some(FullScanLocalAi { provider, endpoint, model: model.id });
+      }
+    }
+  }
+  None
+}
+
+fn local_ai_review_document(
+  local_ai: &FullScanLocalAi,
+  path: &Path,
+  text: String,
+) -> Vec<LocalFinding> {
+  let task = format!(
+    "Review this user-approved local business document for contradictions, unresolved obligations, duplicate or suspicious costs, contract or invoice anomalies, security concerns and efficiency risks. Source path: {}. Do not execute or recommend autonomous changes.",
+    path.display()
+  );
+  let analysis = tauri::async_runtime::block_on(crate::local_ai::local_ai_analyze_text(
+    local_ai.provider.clone(),
+    local_ai.endpoint.clone(),
+    local_ai.model.clone(),
+    text,
+    Some(task),
+    true,
+  ));
+  let Ok(analysis) = analysis else { return Vec::new(); };
+
+  analysis.findings.into_iter().map(|finding| LocalFinding {
+    id: Uuid::new_v4().to_string(),
+    category: format!("local_ai_review:{}", finding.category),
+    severity: finding.severity,
+    title: format!("Local AI advisory: {}", finding.title),
+    summary: format!(
+      "Local-only {} model {} flagged this for human verification. {}",
+      analysis.provider, analysis.model, finding.summary
+    ),
+    evidence: format!("{} :: {}", path.display(), finding.evidence),
+    remediation: format!(
+      "Review the source manually. {} CashPatch will not execute, edit, send, delete, pay or otherwise change anything.",
+      finding.remediation
+    ),
+  }).collect()
+}
+
 fn format_eta(seconds: u64) -> String {
   if seconds < 60 {
     return format!("about {} seconds", seconds.max(1));
@@ -614,6 +686,15 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     let mut invoice_numbers = HashMap::<String, (PathBuf, Option<String>)>::new();
     let mut reported_invoice_numbers = HashSet::<String>::new();
     let mut findings = Vec::<LocalFinding>::new();
+    let local_ai = discover_full_scan_local_ai();
+    let mut local_ai_documents_reviewed = 0_u64;
+
+    if let Some(ai) = &local_ai {
+      if let Ok(mut state) = runtime().lock() {
+        state.snapshot.current_item = Some(format!("Local AI ready: {} · {}", ai.provider, ai.model));
+      }
+      emit_snapshot(&app);
+    }
 
     for root in &roots {
       let walker = WalkDir::new(root)
@@ -698,6 +779,24 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                         (path.to_path_buf(), invoice.amount.clone()),
                       );
                     }
+                  }
+                }
+              }
+
+              if business_extension(path)
+                && !sensitive_filename(path)
+                && local_ai_documents_reviewed < MAX_LOCAL_AI_DOCUMENTS_PER_SCAN
+              {
+                if let (Some(ai), Ok(Some(text))) =
+                  (local_ai.as_ref(), document_analysis::extract_document_text(path, len))
+                {
+                  if !text.trim().is_empty() {
+                    local_ai_documents_reviewed = local_ai_documents_reviewed.saturating_add(1);
+                    if let Ok(mut state) = runtime().lock() {
+                      state.snapshot.current_item = Some(format!("Local AI advisory review: {}", path.display()));
+                    }
+                    emit_snapshot(&app);
+                    findings.extend(local_ai_review_document(ai, path, text));
                   }
                 }
               }

@@ -99,6 +99,22 @@ describe('local scan consent and privacy contracts', () => {
     expect(app).toContain('finding.confidence}%')
   })
 
+  it('uses the shared loopback-only local AI router during Full Scan', () => {
+    const scan = readRepoFile('desktop/src-tauri/src/scan.rs')
+    const localAi = readRepoFile('desktop/src-tauri/src/local_ai.rs')
+    const backend = readRepoFile('desktop/src-tauri/src/lib.rs')
+
+    expect(backend).toContain('mod local_ai;')
+    expect(scan).toContain('discover_full_scan_local_ai()')
+    expect(scan).toContain('crate::local_ai::local_ai_models')
+    expect(scan).toContain('crate::local_ai::local_ai_analyze_text')
+    expect(scan).toContain('document_analysis::extract_document_text(path, len)')
+    expect(scan).toContain('Local AI advisory review:')
+    expect(scan).toContain('!sensitive_filename(path)')
+    expect(localAi).toContain('egress::allow_local_ai')
+    expect(localAi).toContain('normalize_base_endpoint')
+  })
+
   it('surfaces crash-safe recovery and local scan history without automatic resume', () => {
     const app = readRepoFile('desktop/src/App.tsx')
     const scan = readRepoFile('desktop/src-tauri/src/scan.rs')
