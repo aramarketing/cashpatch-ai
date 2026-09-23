@@ -181,6 +181,100 @@ fn parse_claude(root: &Value) -> Option<ConversationImport> {
   })
 }
 
+fn gemini_activity_hint(item: &Value) -> bool {
+  let contains_hint = |value: &str| {
+    let value = value.to_ascii_lowercase();
+    value.contains("gemini") || value.contains("bard")
+  };
+
+  for key in ["header", "product", "service", "app", "source"] {
+    if item.get(key).and_then(Value::as_str).is_some_and(contains_hint) {
+      return true;
+    }
+  }
+
+  item
+    .get("products")
+    .and_then(Value::as_array)
+    .map(|products| products.iter().filter_map(Value::as_str).any(contains_hint))
+    .unwrap_or(false)
+}
+
+fn parse_gemini_activity(root: &Value) -> Option<ConversationImport> {
+  let activities = root.as_array()?;
+  if !activities.iter().any(gemini_activity_hint) {
+    return None;
+  }
+
+  let mut messages = Vec::<ConversationMessage>::new();
+  let mut truncated = false;
+
+  for activity in activities.iter().filter(|item| gemini_activity_hint(item)) {
+    let title = activity
+      .get("title")
+      .and_then(Value::as_str)
+      .map(ToString::to_string);
+    push_message(&mut messages, Some("user"), title, &mut truncated);
+
+    let description = activity
+      .get("description")
+      .and_then(Value::as_str)
+      .map(ToString::to_string);
+    push_message(&mut messages, Some("assistant"), description, &mut truncated);
+
+    if let Some(details) = activity.get("details").and_then(Value::as_array) {
+      for detail in details {
+        let name = detail.get("name").and_then(Value::as_str).unwrap_or("activity");
+        let value = detail
+          .get("value")
+          .or_else(|| detail.get("text"))
+          .and_then(Value::as_str)
+          .map(ToString::to_string);
+        push_message(&mut messages, Some(name), value, &mut truncated);
+        if messages.len() >= MAX_MESSAGES {
+          break;
+        }
+      }
+    }
+
+    if let Some(turns) = activity
+      .get("messages")
+      .or_else(|| activity.get("turns"))
+      .and_then(Value::as_array)
+    {
+      for turn in turns {
+        let role = turn
+          .get("role")
+          .or_else(|| turn.get("author"))
+          .or_else(|| turn.get("sender"))
+          .and_then(Value::as_str);
+        let text = turn
+          .get("text")
+          .and_then(Value::as_str)
+          .map(ToString::to_string)
+          .or_else(|| turn.get("content").and_then(text_from_parts));
+        push_message(&mut messages, role, text, &mut truncated);
+        if messages.len() >= MAX_MESSAGES {
+          break;
+        }
+      }
+    }
+
+    if messages.len() >= MAX_MESSAGES {
+      truncated = true;
+      break;
+    }
+  }
+
+  let characters = messages.iter().map(|message| message.text.chars().count()).sum();
+  Some(ConversationImport {
+    source_format: "gemini-activity-export".to_string(),
+    messages,
+    characters,
+    truncated,
+  })
+}
+
 fn parse_generic(value: &Value) -> ConversationImport {
   fn walk(value: &Value, messages: &mut Vec<ConversationMessage>, truncated: &mut bool) {
     if messages.len() >= MAX_MESSAGES {
@@ -236,6 +330,15 @@ fn parse_generic(value: &Value) -> ConversationImport {
   }
 }
 
+fn filename_looks_like_gemini(path: &Path) -> bool {
+  let name = path
+    .file_name()
+    .and_then(|value| value.to_str())
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+  name.contains("gemini") || name.contains("bard")
+}
+
 pub fn load_user_selected_export(path: &Path) -> Result<ConversationImport, String> {
   let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
   if !metadata.is_file() {
@@ -254,6 +357,53 @@ pub fn load_user_selected_export(path: &Path) -> Result<ConversationImport, Stri
   if let Some(parsed) = parse_claude(&value) {
     return Ok(parsed);
   }
+  if let Some(parsed) = parse_gemini_activity(&value) {
+    return Ok(parsed);
+  }
 
-  Ok(parse_generic(&value))
+  let mut parsed = parse_generic(&value);
+  if filename_looks_like_gemini(path) {
+    parsed.source_format = "gemini-json-export".to_string();
+  }
+  Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use serde_json::json;
+
+  #[test]
+  fn parses_gemini_activity_without_provider_scraping() {
+    let export = json!([
+      {
+        "header": "Gemini Apps",
+        "title": "Asked Gemini to compare two supplier invoices",
+        "description": "The invoices may contain a duplicate charge.",
+        "products": ["Gemini Apps"],
+        "details": [
+          {"name": "prompt", "value": "Check whether invoice RE-77 was charged twice"}
+        ]
+      }
+    ]);
+
+    let parsed = parse_gemini_activity(&export).expect("Gemini activity should be recognized");
+    assert_eq!(parsed.source_format, "gemini-activity-export");
+    assert!(parsed.messages.iter().any(|message| message.text.contains("supplier invoices")));
+    assert!(parsed.messages.iter().any(|message| message.text.contains("duplicate charge")));
+    assert!(parsed.messages.iter().any(|message| message.text.contains("RE-77")));
+  }
+
+  #[test]
+  fn ignores_non_gemini_activity_for_gemini_specific_parser() {
+    let export = json!([
+      {
+        "header": "Search",
+        "title": "ordinary activity",
+        "products": ["Search"]
+      }
+    ]);
+
+    assert!(parse_gemini_activity(&export).is_none());
+  }
 }
