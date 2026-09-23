@@ -83,6 +83,22 @@ describe('local scan consent and privacy contracts', () => {
     expect(app).toContain('local AI runtimes available')
   })
 
+  it('explains confidence and possible financial impact for every local finding', () => {
+    const app = readRepoFile('desktop/src/App.tsx')
+    const scan = readRepoFile('desktop/src-tauri/src/scan.rs')
+
+    expect(scan).toContain('struct LocalFindingView')
+    expect(scan).toContain('confidence: u8')
+    expect(scan).toContain('financial_impact: String')
+    expect(scan).toContain('fn finding_confidence(finding: &LocalFinding) -> u8')
+    expect(scan).toContain('fn finding_financial_impact(finding: &LocalFinding) -> String')
+    expect(scan).toContain('- Possible financial impact: {}')
+    expect(app).toContain('financialImpact: string')
+    expect(app).toContain('Why this stands out:')
+    expect(app).toContain('Possible financial impact:')
+    expect(app).toContain('finding.confidence}%')
+  })
+
   it('surfaces crash-safe recovery and local scan history without automatic resume', () => {
     const app = readRepoFile('desktop/src/App.tsx')
     const scan = readRepoFile('desktop/src-tauri/src/scan.rs')

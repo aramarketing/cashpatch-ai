@@ -71,6 +71,8 @@ type LocalFinding = {
   id: string
   category: string
   severity: string
+  confidence: number
+  financialImpact: string
   title: string
   summary: string
   evidence: string
@@ -815,8 +817,10 @@ export default function App() {
             {scanSnapshot.findings.map(finding => <article className="local-finding" key={finding.id}>
               <div className="local-finding-top"><span>{finding.category}</span><strong>{finding.severity}</strong></div>
               <h3>{finding.title}</h3>
-              <p>{finding.summary}</p>
-              <small>{finding.evidence}</small>
+              <div className="status-line"><span>Confidence</span><strong>{finding.confidence}%</strong></div>
+              <p><b>Why this stands out:</b> {finding.summary}</p>
+              <p><b>Possible financial impact:</b> {finding.financialImpact}</p>
+              <small>Evidence: {finding.evidence}</small>
               <div className="local-next"><span>HOW TO FIX</span><b>{finding.remediation}</b></div>
             </article>)}
             {!scanSnapshot.findings.length && <article className="local-finding"><h3>No local findings in this pass.</h3><p>CashPatch changed nothing.</p></article>}
@@ -836,8 +840,10 @@ export default function App() {
                 <strong>{finding.severity}</strong>
               </div>
               <h3>{finding.title}</h3>
-              <p>{finding.summary}</p>
-              <small>{finding.evidence}</small>
+              <div className="status-line"><span>Confidence</span><strong>{finding.confidence}%</strong></div>
+              <p><b>Why this stands out:</b> {finding.summary}</p>
+              <p><b>Possible financial impact:</b> {finding.financialImpact}</p>
+              <small>Evidence: {finding.evidence}</small>
               <div className="local-next"><span>RECOMMENDED HUMAN ACTION</span><b>{finding.remediation}</b></div>
               <small>Review only · CashPatch changed nothing.</small>
             </article>)}

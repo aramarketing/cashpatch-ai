@@ -43,7 +43,7 @@ pub struct QuickScanPlan {
 }
 
 #[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(into = "LocalFindingView")]
 pub struct LocalFinding {
   pub id: String,
   pub category: String,
@@ -52,6 +52,61 @@ pub struct LocalFinding {
   pub summary: String,
   pub evidence: String,
   pub remediation: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFindingView {
+  id: String,
+  category: String,
+  severity: String,
+  confidence: u8,
+  financial_impact: String,
+  title: String,
+  summary: String,
+  evidence: String,
+  remediation: String,
+}
+
+fn finding_confidence(finding: &LocalFinding) -> u8 {
+  match finding.title.as_str() {
+    "Duplicate business file detected" => 100,
+    "Duplicate invoice number detected" => 92,
+    "Large stale file worth reviewing" => 95,
+    "Some locations could not be read" => 100,
+    "Potential plaintext credential file" => 65,
+    _ if finding.category == "vulnerability" => 90,
+    _ if finding.category == "finance" || finding.category == "cost_efficiency" => 80,
+    _ => 70,
+  }
+}
+
+fn finding_financial_impact(finding: &LocalFinding) -> String {
+  match finding.category.as_str() {
+    "finance" => "Possible duplicate charge, overpayment or billing correction. Verify the exact amount against payment records before acting.".to_string(),
+    "cost_efficiency" => "Potential avoidable storage, subscription or administrative cost. Exact savings are not assumed until a human verifies the source.".to_string(),
+    "efficiency" => "Possible storage or administration savings; CashPatch does not assign a monetary value without supporting evidence.".to_string(),
+    "vulnerability" | "security" => "Primarily risk reduction. A direct monetary amount is not claimed without evidence.".to_string(),
+    _ => "No direct monetary impact calculated for this finding.".to_string(),
+  }
+}
+
+impl From<LocalFinding> for LocalFindingView {
+  fn from(finding: LocalFinding) -> Self {
+    let confidence = finding_confidence(&finding);
+    let financial_impact = finding_financial_impact(&finding);
+    Self {
+      id: finding.id,
+      category: finding.category,
+      severity: finding.severity,
+      confidence,
+      financial_impact,
+      title: finding.title,
+      summary: finding.summary,
+      evidence: finding.evidence,
+      remediation: finding.remediation,
+    }
+  }
 }
 
 #[derive(Clone, Serialize)]
@@ -879,6 +934,8 @@ pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
           lines.push(String::new());
           lines.push(format!("- Category: {}", finding.category));
           lines.push(format!("- Severity: {}", finding.severity));
+          lines.push(format!("- Confidence: {}%", finding_confidence(finding)));
+          lines.push(format!("- Possible financial impact: {}", finding_financial_impact(finding)));
           lines.push(format!("- Evidence: {}", finding.evidence));
           lines.push(String::new());
           lines.push(finding.summary.clone());
