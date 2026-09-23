@@ -16,6 +16,12 @@ describe('local OS security posture contract', () => {
     expect(rustSource).not.toContain('osascript')
   })
 
+  it('does not read Windows autologon credentials while checking whether autologon is enabled', () => {
+    expect(rustSource).toContain('AutoAdminLogon')
+    expect(rustSource).not.toContain('DefaultPassword')
+    expect(rustSource).not.toContain('DefaultUserName')
+  })
+
   it('surfaces security warnings in full-scan findings', () => {
     expect(scanSource).toContain('security_posture.checks.into_iter().filter')
     expect(scanSource).toContain('security_posture:')
