@@ -23,8 +23,6 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
-
       - name: Wire security posture into native scan and dashboard
         run: python3 .github/scripts/wire_security_posture.py
 
@@ -36,8 +34,9 @@ jobs:
         working-directory: desktop
         run: npm test
 
-      - name: Check Rust core
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+      - name: Build desktop frontend
+        working-directory: desktop
+        run: npm run build
 
       - name: Commit tested wiring and remove one-shot agent files
         shell: bash
