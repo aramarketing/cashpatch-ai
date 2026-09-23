@@ -1,4 +1,4 @@
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chacha20poly1305::{
   aead::{Aead, KeyInit},
@@ -10,6 +10,7 @@ use std::{
   fs,
   path::PathBuf,
   sync::{Mutex, OnceLock},
+  thread,
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
@@ -19,6 +20,10 @@ use zeroize::Zeroizing;
 const VAULT_VERSION: u32 = 1;
 const VAULT_AAD: &[u8] = b"CashPatchVault:v1";
 const AUTO_LOCK_AFTER: Duration = Duration::from_secs(10 * 60);
+const CLIPBOARD_CLEAR_AFTER: Duration = Duration::from_secs(30);
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+const ARGON2_ITERATIONS: u32 = 3;
+const ARGON2_PARALLELISM: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,8 +118,16 @@ fn derive_key(master_password: &str, salt: &[u8]) -> Result<Zeroizing<Vec<u8>>, 
     return Err("Master passphrase must be at least 12 characters".to_string());
   }
 
+  let params = Params::new(
+    ARGON2_MEMORY_KIB,
+    ARGON2_ITERATIONS,
+    ARGON2_PARALLELISM,
+    Some(32),
+  )
+  .map_err(|_| "Unable to configure Argon2id".to_string())?;
+  let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
   let mut key = Zeroizing::new(vec![0_u8; 32]);
-  Argon2::default()
+  argon2
     .hash_password_into(master_password.as_bytes(), salt, &mut key)
     .map_err(|_| "Unable to derive vault key".to_string())?;
   Ok(key)
@@ -379,6 +392,35 @@ pub fn vault_get_secret(app: AppHandle, entry_id: String) -> Result<String, Stri
     .find(|entry| entry.id == entry_id)
     .map(|entry| entry.secret)
     .ok_or_else(|| "Vault entry not found".to_string())
+}
+
+#[tauri::command]
+pub fn vault_copy_secret(app: AppHandle, entry_id: String) -> Result<u64, String> {
+  let key = unlocked_key()?;
+  let (_, payload, _) = load_payload(&app, &key)?;
+  let secret = payload
+    .entries
+    .into_iter()
+    .find(|entry| entry.id == entry_id)
+    .map(|entry| Zeroizing::new(entry.secret))
+    .ok_or_else(|| "Vault entry not found".to_string())?;
+
+  let mut clipboard = arboard::Clipboard::new().map_err(|_| "Clipboard is unavailable".to_string())?;
+  clipboard
+    .set_text(secret.as_str().to_string())
+    .map_err(|_| "Unable to copy vault secret".to_string())?;
+
+  let secret_for_clear = Zeroizing::new(secret.as_str().to_string());
+  thread::spawn(move || {
+    thread::sleep(CLIPBOARD_CLEAR_AFTER);
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+      if clipboard.get_text().ok().as_deref() == Some(secret_for_clear.as_str()) {
+        let _ = clipboard.set_text(String::new());
+      }
+    }
+  });
+
+  Ok(CLIPBOARD_CLEAR_AFTER.as_secs())
 }
 
 #[tauri::command]
