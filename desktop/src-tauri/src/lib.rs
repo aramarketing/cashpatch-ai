@@ -528,6 +528,38 @@ async fn entitlement_check(app: tauri::AppHandle) -> Result<EntitlementPublic, S
   })
 }
 
+async fn require_active_entitlement(app: &tauri::AppHandle) -> Result<(), String> {
+  let status = entitlement_check(app.clone()).await?;
+  if !status.paired {
+    return Err("CashPatch device pairing is required before scanning".to_string());
+  }
+  if !status.allowed {
+    return Err("An active CashPatch subscription is required before scanning".to_string());
+  }
+  Ok(())
+}
+
+#[tauri::command]
+async fn quick_scan_start(
+  app: tauri::AppHandle,
+  consent: bool,
+  extra_roots: Vec<String>,
+  recover_interrupted: Option<bool>,
+) -> Result<String, String> {
+  require_active_entitlement(&app).await?;
+  scan::quick_scan_start(app, consent, extra_roots, recover_interrupted)
+}
+
+#[tauri::command]
+async fn full_scan_start(
+  app: tauri::AppHandle,
+  scan_id: String,
+  consent: bool,
+) -> Result<(), String> {
+  require_active_entitlement(&app).await?;
+  scan::full_scan_start(app, scan_id, consent)
+}
+
 #[tauri::command]
 async fn cloud_sources(app: tauri::AppHandle) -> Result<Vec<CloudSource>, String> {
   let device_id = secret_get("cloud-device-id").ok_or("Device is not paired")?;
@@ -642,8 +674,8 @@ pub fn run() {
       inventory::vulnerability::vulnerability_database_status,
       inventory::vulnerability::vulnerability_scan,
       conversation_review::conversation_review_import,
-      scan::quick_scan_start,
-      scan::full_scan_start,
+      quick_scan_start,
+      full_scan_start,
       scan::scan_status,
       scan::scan_pause,
       scan::scan_resume,
