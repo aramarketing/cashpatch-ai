@@ -141,7 +141,7 @@ fn recurring_hint(text: &str) -> bool {
   .any(|needle| lower.contains(needle))
 }
 
-fn analyze_text(text: &str) -> DocumentSignals {
+pub(crate) fn analyze_text(text: &str) -> DocumentSignals {
   let lower = text.to_ascii_lowercase();
   if !lower.contains("rechnung") && !lower.contains("invoice") {
     return DocumentSignals::default();
@@ -307,18 +307,20 @@ fn extract_pdf_text(path: &Path, len: u64) -> Result<Option<String>, String> {
   }
 }
 
-pub fn analyze_document(path: &Path, len: u64) -> Result<Option<DocumentSignals>, String> {
-  let text = if supported_plaintext_extension(path) {
-    read_bounded_plaintext(path, len)?
+pub(crate) fn extract_document_text(path: &Path, len: u64) -> Result<Option<String>, String> {
+  if supported_plaintext_extension(path) {
+    read_bounded_plaintext(path, len)
   } else if supported_archive_extension(path) {
-    extract_archive_text(path, len)?
+    extract_archive_text(path, len)
   } else if extension(path) == "pdf" {
-    extract_pdf_text(path, len)?
+    extract_pdf_text(path, len)
   } else {
-    None
-  };
+    Ok(None)
+  }
+}
 
-  Ok(text.map(|value| analyze_text(&value)))
+pub fn analyze_document(path: &Path, len: u64) -> Result<Option<DocumentSignals>, String> {
+  Ok(extract_document_text(path, len)?.map(|value| analyze_text(&value)))
 }
 
 #[cfg(test)]
