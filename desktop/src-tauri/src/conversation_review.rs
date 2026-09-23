@@ -1,6 +1,5 @@
 use crate::conversations::load_user_selected_export;
-#[path = "local_ai.rs"]
-mod local_ai;
+use crate::local_ai;
 use serde::Serialize;
 use std::path::Path;
 use uuid::Uuid;
