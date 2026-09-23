@@ -1,5 +1,5 @@
 use crate::egress;
-use reqwest::{Client, Url};
+use reqwest::{redirect::Policy, Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -116,6 +116,17 @@ fn sanitize_field(value: &str) -> String {
   trim_chars(&redact_token_like_words(value), MAX_FIELD_CHARS)
 }
 
+fn local_client(timeout: Duration) -> Result<Client, String> {
+  // Local-AI content must never be handed to an HTTP(S)_PROXY and must not
+  // escape loopback through a redirect returned by a local process.
+  Client::builder()
+    .timeout(timeout)
+    .no_proxy()
+    .redirect(Policy::none())
+    .build()
+    .map_err(|e| e.to_string())
+}
+
 fn normalize_base_endpoint(provider: &str, custom_endpoint: Option<&str>) -> Result<Url, String> {
   let raw = match provider {
     "ollama" => "http://127.0.0.1:11434",
@@ -212,10 +223,7 @@ fn parse_findings(content: &str) -> Result<Vec<LocalAiFinding>, String> {
 pub async fn local_ai_models(provider: String, endpoint: Option<String>) -> Result<Vec<LocalAiModel>, String> {
   let base = normalize_base_endpoint(&provider, endpoint.as_deref())?;
   let url = models_url(&provider, &base)?;
-  let client = Client::builder()
-    .timeout(Duration::from_secs(4))
-    .build()
-    .map_err(|e| e.to_string())?;
+  let client = local_client(Duration::from_secs(4))?;
   let response = client.get(url).send().await.map_err(|e| format!("Local AI is unavailable: {e}"))?;
   if !response.status().is_success() {
     return Err(format!("Local AI model discovery returned {}", response.status()));
@@ -273,10 +281,7 @@ pub async fn local_ai_analyze_text(
   let task = trim_chars(task.as_deref().unwrap_or("Review for business, cost, operational and security anomalies."), MAX_TASK_CHARS);
   let user_prompt = format!("Audit task: {task}\n\nLocal source text:\n{input}");
 
-  let client = Client::builder()
-    .timeout(Duration::from_secs(90))
-    .build()
-    .map_err(|e| e.to_string())?;
+  let client = local_client(Duration::from_secs(90))?;
 
   let payload = if provider == "ollama" {
     json!({
@@ -357,6 +362,11 @@ mod tests {
     assert_eq!(chat_url("ollama", &ollama).unwrap().as_str(), "http://127.0.0.1:11434/api/chat");
     let lm = normalize_base_endpoint("lm-studio", None).unwrap();
     assert_eq!(models_url("lm-studio", &lm).unwrap().as_str(), "http://127.0.0.1:1234/v1/models");
+  }
+
+  #[test]
+  fn local_client_builds_without_proxy_or_redirect_support() {
+    assert!(local_client(Duration::from_millis(250)).is_ok());
   }
 
   #[test]
