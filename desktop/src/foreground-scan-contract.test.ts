@@ -2,9 +2,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const appSource = readFileSync(fileURLToPath(new URL('./App.tsx', import.meta.url)), 'utf8')
-const rustSource = readFileSync(fileURLToPath(new URL('../src-tauri/src/lib.rs', import.meta.url)), 'utf8')
-const scanSource = readFileSync(fileURLToPath(new URL('../src-tauri/src/scan.rs', import.meta.url)), 'utf8')
+function readNormalized(relativePath: string) {
+  return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8').replace(/\r\n/g, '\n')
+}
+
+const appSource = readNormalized('./App.tsx')
+const rustSource = readNormalized('../src-tauri/src/lib.rs')
+const scanSource = readNormalized('../src-tauri/src/scan.rs')
 
 describe('foreground-only scan contract', () => {
   it('requires explicit consent before Quick Scan and a second confirmation before Full Scan', () => {
