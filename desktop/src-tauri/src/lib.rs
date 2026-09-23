@@ -2,6 +2,7 @@ mod conversation_review;
 mod conversations;
 mod egress;
 mod inventory;
+mod local_ai;
 mod scan;
 mod vault;
 use keyring::Entry;
