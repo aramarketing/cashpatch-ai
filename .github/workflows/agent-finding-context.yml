@@ -1,0 +1,92 @@
+name: Agent Finding Context Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/agent-finding-context.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enrich review-only findings
+        shell: python
+        run: |
+          from pathlib import Path
+
+          scan_path = Path('desktop/src-tauri/src/scan.rs')
+          app_path = Path('desktop/src/App.tsx')
+          test_path = Path('desktop/src/local-scan-contract.test.ts')
+
+          scan = scan_path.read_text()
+          old = '''#[derive(Clone, Serialize)]\n#[serde(rename_all = "camelCase")]\npub struct LocalFinding {\n  pub id: String,\n  pub category: String,\n  pub severity: String,\n  pub title: String,\n  pub summary: String,\n  pub evidence: String,\n  pub remediation: String,\n}\n'''
+          new = '''#[derive(Clone, Serialize)]\n#[serde(into = "LocalFindingView")]\npub struct LocalFinding {\n  pub id: String,\n  pub category: String,\n  pub severity: String,\n  pub title: String,\n  pub summary: String,\n  pub evidence: String,\n  pub remediation: String,\n}\n\n#[derive(Serialize)]\n#[serde(rename_all = "camelCase")]\nstruct LocalFindingView {\n  id: String,\n  category: String,\n  severity: String,\n  confidence: u8,\n  financial_impact: String,\n  title: String,\n  summary: String,\n  evidence: String,\n  remediation: String,\n}\n\nfn finding_confidence(finding: &LocalFinding) -> u8 {\n  match finding.title.as_str() {\n    "Duplicate business file detected" => 100,\n    "Duplicate invoice number detected" => 92,\n    "Large stale file worth reviewing" => 95,\n    "Some locations could not be read" => 100,\n    "Potential plaintext credential file" => 65,\n    _ if finding.category == "vulnerability" => 90,\n    _ if finding.category == "finance" || finding.category == "cost_efficiency" => 80,\n    _ => 70,\n  }\n}\n\nfn finding_financial_impact(finding: &LocalFinding) -> String {\n  match finding.category.as_str() {\n    "finance" => "Possible duplicate charge, overpayment or billing correction. Verify the exact amount against payment records before acting.".to_string(),\n    "cost_efficiency" => "Potential avoidable storage, subscription or administrative cost. Exact savings are not assumed until a human verifies the source.".to_string(),\n    "efficiency" => "Possible storage or administration savings; CashPatch does not assign a monetary value without supporting evidence.".to_string(),\n    "vulnerability" | "security" => "Primarily risk reduction. A direct monetary amount is not claimed without evidence.".to_string(),\n    _ => "No direct monetary impact calculated for this finding.".to_string(),\n  }\n}\n\nimpl From<LocalFinding> for LocalFindingView {\n  fn from(finding: LocalFinding) -> Self {\n    let confidence = finding_confidence(&finding);\n    let financial_impact = finding_financial_impact(&finding);\n    Self {\n      id: finding.id,\n      category: finding.category,\n      severity: finding.severity,\n      confidence,\n      financial_impact,\n      title: finding.title,\n      summary: finding.summary,\n      evidence: finding.evidence,\n      remediation: finding.remediation,\n    }\n  }\n}\n'''
+          if old not in scan:
+              raise SystemExit('LocalFinding struct anchor missing')
+          scan = scan.replace(old, new, 1)
+
+          old = '''          lines.push(format!("- Category: {}", finding.category));\n          lines.push(format!("- Severity: {}", finding.severity));\n          lines.push(format!("- Evidence: {}", finding.evidence));\n'''
+          new = '''          lines.push(format!("- Category: {}", finding.category));\n          lines.push(format!("- Severity: {}", finding.severity));\n          lines.push(format!("- Confidence: {}%", finding_confidence(finding)));\n          lines.push(format!("- Possible financial impact: {}", finding_financial_impact(finding)));\n          lines.push(format!("- Evidence: {}", finding.evidence));\n'''
+          if old not in scan:
+              raise SystemExit('report finding metadata anchor missing')
+          scan = scan.replace(old, new, 1)
+          scan_path.write_text(scan)
+
+          app = app_path.read_text()
+          old = '''type LocalFinding = {\n  id: string\n  category: string\n  severity: string\n  title: string\n  summary: string\n  evidence: string\n  remediation: string\n}\n'''
+          new = '''type LocalFinding = {\n  id: string\n  category: string\n  severity: string\n  confidence: number\n  financialImpact: string\n  title: string\n  summary: string\n  evidence: string\n  remediation: string\n}\n'''
+          if old not in app:
+              raise SystemExit('LocalFinding TypeScript type anchor missing')
+          app = app.replace(old, new, 1)
+
+          old = '''              <div className="local-finding-top"><span>{finding.category}</span><strong>{finding.severity}</strong></div>\n              <h3>{finding.title}</h3>\n              <p>{finding.summary}</p>\n              <small>{finding.evidence}</small>\n              <div className="local-next"><span>HOW TO FIX</span><b>{finding.remediation}</b></div>\n'''
+          new = '''              <div className="local-finding-top"><span>{finding.category}</span><strong>{finding.severity}</strong></div>\n              <h3>{finding.title}</h3>\n              <div className="status-line"><span>Confidence</span><strong>{finding.confidence}%</strong></div>\n              <p><b>Why this stands out:</b> {finding.summary}</p>\n              <p><b>Possible financial impact:</b> {finding.financialImpact}</p>\n              <small>Evidence: {finding.evidence}</small>\n              <div className="local-next"><span>HOW TO FIX</span><b>{finding.remediation}</b></div>\n'''
+          if old not in app:
+              raise SystemExit('completed scan finding card anchor missing')
+          app = app.replace(old, new, 1)
+
+          old = '''              <h3>{finding.title}</h3>\n              <p>{finding.summary}</p>\n              <small>{finding.evidence}</small>\n              <div className="local-next"><span>RECOMMENDED HUMAN ACTION</span><b>{finding.remediation}</b></div>\n              <small>Review only · CashPatch changed nothing.</small>\n'''
+          new = '''              <h3>{finding.title}</h3>\n              <div className="status-line"><span>Confidence</span><strong>{finding.confidence}%</strong></div>\n              <p><b>Why this stands out:</b> {finding.summary}</p>\n              <p><b>Possible financial impact:</b> {finding.financialImpact}</p>\n              <small>Evidence: {finding.evidence}</small>\n              <div className="local-next"><span>RECOMMENDED HUMAN ACTION</span><b>{finding.remediation}</b></div>\n              <small>Review only · CashPatch changed nothing.</small>\n'''
+          if old not in app:
+              raise SystemExit('findings section card anchor missing')
+          app = app.replace(old, new, 1)
+          app_path.write_text(app)
+
+          test = test_path.read_text()
+          anchor = '''  it('surfaces crash-safe recovery and local scan history without automatic resume', () => {\n'''
+          addition = '''  it('explains confidence and possible financial impact for every local finding', () => {\n    const app = readRepoFile('desktop/src/App.tsx')\n    const scan = readRepoFile('desktop/src-tauri/src/scan.rs')\n\n    expect(scan).toContain('struct LocalFindingView')\n    expect(scan).toContain('confidence: u8')\n    expect(scan).toContain('financial_impact: String')\n    expect(scan).toContain('fn finding_confidence(finding: &LocalFinding) -> u8')\n    expect(scan).toContain('fn finding_financial_impact(finding: &LocalFinding) -> String')\n    expect(scan).toContain('- Possible financial impact: {}')\n    expect(app).toContain('financialImpact: string')\n    expect(app).toContain('Why this stands out:')\n    expect(app).toContain('Possible financial impact:')\n    expect(app).toContain('finding.confidence}%')\n  })\n\n'''
+          if anchor not in test:
+              raise SystemExit('local scan test anchor missing')
+          test = test.replace(anchor, addition + anchor, 1)
+          test_path.write_text(test)
+
+      - name: Validate desktop contract tests
+        working-directory: desktop
+        run: |
+          npm install
+          npm test
+
+      - name: Commit integration
+        run: |
+          git diff --check
+          if git diff --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+          git config user.name "CashPatch Agent"
+          git config user.email "61079904+aramarketing@users.noreply.github.com"
+          git add desktop/src-tauri/src/scan.rs desktop/src/App.tsx desktop/src/local-scan-contract.test.ts
+          git commit -m "Enrich findings with confidence and financial context"
+          git push origin main
