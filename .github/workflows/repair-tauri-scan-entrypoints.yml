@@ -1,0 +1,55 @@
+name: Repair Tauri scan entrypoints
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repair-tauri-scan-entrypoints.yml"
+      - "desktop/src-tauri/src/scan.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove duplicate Tauri command attributes from internal scan engine
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('desktop/src-tauri/src/scan.rs')
+          text = path.read_text()
+          replacements = {
+              '#[tauri::command]\npub fn quick_scan_start(': 'pub fn quick_scan_start(',
+              '#[tauri::command]\npub fn full_scan_start(': 'pub fn full_scan_start(',
+          }
+          changed = False
+          for old, new in replacements.items():
+              if old in text:
+                  text = text.replace(old, new, 1)
+                  changed = True
+          if not changed:
+              print('No repair needed.')
+              raise SystemExit(0)
+          path.write_text(text)
+          PY
+
+      - name: Commit repair if needed
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "CashPatch CI Repair"
+          git config user.email "actions@users.noreply.github.com"
+          git add desktop/src-tauri/src/scan.rs
+          git commit -m "Fix duplicate Tauri scan command registration"
+          git push origin HEAD:main
