@@ -461,7 +461,6 @@ pub fn scan_status() -> ScanStatusView {
   }
 }
 
-#[tauri::command]
 pub fn quick_scan_start(
   app: AppHandle,
   consent: bool,
@@ -631,7 +630,6 @@ pub fn quick_scan_start(
   Ok(scan_id)
 }
 
-#[tauri::command]
 pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result<(), String> {
   if !consent {
     return Err("Explicit Full Scan confirmation is required".to_string());
