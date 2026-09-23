@@ -37,6 +37,7 @@ describe('local AI conversation review boundary', () => {
     expect(panelSource).toContain('RECOMMENDED HUMAN ACTION')
     expect(panelSource).toContain('CashPatch executed nothing')
     expect(backendSource).toContain('content redacted by CashPatch')
-    expect(backendSource).toContain('Review the source manually')
+    expect(backendSource).toContain('Verify the invoice, payment reference and bank transaction manually')
+    expect(backendSource).toContain('CashPatch vault')
   })
 })
