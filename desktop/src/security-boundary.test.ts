@@ -14,6 +14,19 @@ describe('CashPatch desktop safety boundaries', () => {
     expect(route).toContain('reviewOnly: true')
   })
 
+  it('fails closed when a future connector carries write-like scopes or capabilities', () => {
+    const route = readRepoFile('app/api/desktop/sources/route.ts')
+
+    expect(route).toContain('forbiddenMutationSignals')
+    for (const signal of ['write', 'create', 'update', 'delete', 'send', 'manage', 'payment', 'payout', 'refund', 'transfer']) {
+      expect(route).toContain(`'${signal}'`)
+    }
+    expect(route).toContain('isStrictlyReviewOnlySource')
+    expect(route).toContain('safeSources = (sources ?? []).filter(isStrictlyReviewOnlySource)')
+    expect(route).toContain("policy: 'default_deny_write_capabilities'")
+    expect(route).toContain('blockedUnsafeSources')
+  })
+
   it('requires active server entitlement before cloud sources or banking sync', () => {
     const sourcesRoute = readRepoFile('app/api/desktop/sources/route.ts')
     const bankingRoute = readRepoFile('app/api/desktop/banking/sync/route.ts')
