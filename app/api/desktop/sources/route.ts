@@ -7,6 +7,45 @@ export const dynamic = 'force-dynamic'
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 
+const forbiddenMutationSignals = [
+  'write',
+  'readwrite',
+  'create',
+  'update',
+  'edit',
+  'delete',
+  'remove',
+  'send',
+  'manage',
+  'admin',
+  'payment',
+  'payout',
+  'refund',
+  'transfer',
+  'initiate',
+  'mutation',
+]
+
+const hasMutationSignal = (value: unknown) => {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) return false
+  return forbiddenMutationSignals.some(signal => normalized.includes(signal))
+}
+
+const isStrictlyReviewOnlySource = (source: {
+  permission_mode: unknown
+  external_write_allowed: unknown
+  scopes: unknown
+  capabilities: unknown
+}) => {
+  if (source.permission_mode !== 'review_only') return false
+  if (source.external_write_allowed !== false) return false
+
+  const scopes = Array.isArray(source.scopes) ? source.scopes : []
+  const capabilities = Array.isArray(source.capabilities) ? source.capabilities : []
+  return ![...scopes, ...capabilities].some(hasMutationSignal)
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json()
@@ -31,9 +70,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'entitlement_required' }, { status: 402 })
     }
 
-    // Desktop CashPatch is review-only by contract. Do not expose a connection to
-    // the desktop client if it can mutate the external system, even if such a
-    // connection exists elsewhere in the workspace.
+    // Desktop CashPatch is review-only by contract. The database query enforces
+    // the primary policy, and the post-query capability guard fails closed if a
+    // future connector accidentally stores any write-like scope/capability.
     const { data: sources, error } = await admin
       .from('source_connections')
       .select('id,provider,provider_category,display_name,status,scopes,capabilities,permission_mode,external_write_allowed,updated_at')
@@ -44,8 +83,10 @@ export async function POST(request: Request) {
 
     if (error) throw error
 
+    const safeSources = (sources ?? []).filter(isStrictlyReviewOnlySource)
+
     return NextResponse.json({
-      sources: (sources ?? []).map(source => ({
+      sources: safeSources.map(source => ({
         id: source.id,
         provider: source.provider,
         category: source.provider_category,
@@ -58,6 +99,8 @@ export async function POST(request: Request) {
         updatedAt: source.updated_at,
       })),
       reviewOnly: true,
+      policy: 'default_deny_write_capabilities',
+      blockedUnsafeSources: Math.max(0, (sources ?? []).length - safeSources.length),
     })
   } catch (error) {
     console.error('desktop source list failed', error)
