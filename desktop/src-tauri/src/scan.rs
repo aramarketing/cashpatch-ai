@@ -432,6 +432,22 @@ fn progress_percent(current: u64, total: u64) -> f64 {
   }
 }
 
+// App resources remain in the file inventory and software security checks, but
+// licenses and bundled assets are not user business documents.
+fn inside_app_bundle(path: &Path) -> bool {
+  path.ancestors().skip(1).any(|parent| {
+    parent.extension().and_then(|ext| ext.to_str())
+      .map(|ext| ext.eq_ignore_ascii_case("app")).unwrap_or(false)
+  })
+}
+
+// Only time spent processing this queue contributes: pauses and filesystem
+// enumeration must never be extrapolated over local model requests.
+fn ai_queue_eta(completed: u64, total: u64, active_seconds: f64, attempts_left: u64) -> Option<u64> {
+  if completed < 3 || completed >= total { return None; }
+  Some((active_seconds / completed as f64 * (total - completed).min(attempts_left) as f64).ceil() as u64)
+}
+
 fn hash_file(path: &Path) -> Result<String, String> {
   let mut file = File::open(path).map_err(|e| e.to_string())?;
   let mut hasher = Hasher::new();
@@ -723,6 +739,10 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     let mut local_ai_documents_reviewed = 0_u64;
     let mut ai_failures = 0_u64;
     let mut ai_truncated = 0_u64;
+    let mut ai_queue = Vec::<(PathBuf, u64)>::new();
+    let mut app_resources_skipped = 0_u64;
+    let mut ai_duplicate_contents = 0_u64;
+    let mut ai_content_hashes = HashSet::<String>::new();
     let mut warnings = Vec::<String>::new();
     if local_ai.is_none() {
       warnings.push("No local AI model is available. Only deterministic checks ran; document meaning was not reviewed by AI.".to_string());
@@ -777,7 +797,10 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                 });
               }
 
-              if business_extension(path) {
+              if business_extension(path) && inside_app_bundle(path) {
+                app_resources_skipped += 1;
+              }
+              if business_extension(path) && !inside_app_bundle(path) {
                 if let Ok(Some(signals)) = document_analysis::analyze_document(path, len) {
                   if let Some(invoice) = signals.invoice {
                     if let Some((first_path, first_amount)) = invoice_numbers.get(&invoice.invoice_number) {
@@ -822,32 +845,9 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                 }
               }
 
-              if business_extension(path)
-                && !sensitive_filename(path)
-                && local_ai_documents_reviewed < MAX_LOCAL_AI_DOCUMENTS_PER_SCAN
-              {
-                if let (Some(ai), Ok(Some(text))) =
-                  (local_ai.as_ref(), document_analysis::extract_document_text(path, len))
-                {
-                  if !text.trim().is_empty() {
-                    local_ai_documents_reviewed = local_ai_documents_reviewed.saturating_add(1);
-                    if let Ok(mut state) = runtime().lock() {
-                      state.snapshot.current_item = Some(format!("Local AI advisory review: {}", path.display()));
-                    }
-                    emit_snapshot(&app);
-                    match local_ai_review_document(ai, path, text, &cancel) {
-                      Ok((items, truncated)) => {
-                        findings.extend(items);
-                        ai_truncated += u64::from(truncated);
-                      }
-                      Err(_) => ai_failures += 1,
-                    }
-                    if !wait_if_paused(&pause, &cancel) {
-                      set_terminal_phase(&app, "cancelled");
-                      return;
-                    }
-                  }
-                }
+              if business_extension(path) && !inside_app_bundle(path)
+                && !sensitive_filename(path) && local_ai.is_some() {
+                ai_queue.push((path.to_path_buf(), len));
               }
 
               if business_extension(path) && len > 0 && len <= CONTENT_HASH_MAX_BYTES {
@@ -881,17 +881,13 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
               }
             }
 
-            let percent = progress_percent(files, expected_files);
+            let percent = progress_percent(files, expected_files) * 0.5;
             let elapsed = started.elapsed().as_secs();
-            let eta = if files > 0 && expected_files > files {
-              let rate = files as f64 / started.elapsed().as_secs_f64().max(1.0);
-              Some(((expected_files - files) as f64 / rate.max(0.1)) as u64)
-            } else {
-              None
-            };
+            // The document queue is not yet known; do not invent a total ETA.
+            let eta = None;
 
             if let Ok(mut state) = runtime().lock() {
-              state.snapshot.current_item = Some(path.display().to_string());
+              state.snapshot.current_item = Some(format!("File inventory and deterministic checks: {}", path.display()));
               state.snapshot.files_seen = files;
               state.snapshot.directories_seen = dirs;
               state.snapshot.bytes_seen = bytes;
@@ -917,6 +913,55 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     if !wait_if_paused(&pause, &cancel) {
       set_terminal_phase(&app, "cancelled");
       return;
+    }
+    let queue_total = ai_queue.len() as u64;
+    let mut ai_active_seconds = 0.0;
+    for (index, (path, len)) in ai_queue.into_iter().enumerate() {
+      if !wait_if_paused(&pause, &cancel) {
+        set_terminal_phase(&app, "cancelled");
+        return;
+      }
+      if local_ai_documents_reviewed >= MAX_LOCAL_AI_DOCUMENTS_PER_SCAN { break; }
+      if let Ok(mut state) = runtime().lock() {
+        state.snapshot.current_item = Some(format!("Document review: {} of {} candidates · {}", index + 1, queue_total, path.display()));
+        state.snapshot.progress_percent = 50.0 + progress_percent(index as u64, queue_total) * 0.5;
+        state.snapshot.eta_seconds = ai_queue_eta(index as u64, queue_total, ai_active_seconds, MAX_LOCAL_AI_DOCUMENTS_PER_SCAN.saturating_sub(local_ai_documents_reviewed));
+        state.snapshot.elapsed_seconds = started.elapsed().as_secs();
+        state.snapshot.ai_documents_reviewed = local_ai_documents_reviewed.saturating_sub(ai_failures);
+        state.snapshot.findings_count = findings.len() as u64 + duplicate_groups.len() as u64;
+      }
+      emit_snapshot(&app);
+      let item_started = Instant::now();
+      if let (Some(ai), Ok(Some(text))) = (local_ai.as_ref(), document_analysis::extract_document_text(&path, len)) {
+        if !text.trim().is_empty() {
+          // Hash the entire extracted text, not just the truncated model input.
+          let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+          if ai_content_hashes.contains(&hash) {
+            ai_duplicate_contents += 1;
+          } else {
+            local_ai_documents_reviewed += 1;
+            match local_ai_review_document(ai, &path, text, &cancel) {
+              Ok((items, truncated)) => {
+                findings.extend(items);
+                ai_truncated += u64::from(truncated);
+                ai_content_hashes.insert(hash);
+              }
+              Err(_) => ai_failures += 1,
+            }
+          }
+        }
+      }
+      ai_active_seconds += item_started.elapsed().as_secs_f64();
+    }
+    if !wait_if_paused(&pause, &cancel) {
+      set_terminal_phase(&app, "cancelled");
+      return;
+    }
+    if app_resources_skipped > 0 {
+      warnings.push(format!("{app_resources_skipped} application resource files were inventoried but excluded from business document content review. Software security checks are separate."));
+    }
+    if ai_duplicate_contents > 0 {
+      warnings.push(format!("{ai_duplicate_contents} documents had identical extracted text to an already reviewed document. AI reviewed each unique text once; findings refer to the representative file."));
     }
     for (evidence, count) in duplicate_groups {
       findings.push(LocalFinding {
@@ -1156,6 +1201,22 @@ mod scope_tests {
     let result = resolve_roots(vec![root.display().to_string(), root.join("nested").display().to_string()]).unwrap();
     assert_eq!(result, vec![root.canonicalize().unwrap()]);
     std::fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn eta_uses_document_queue_and_excludes_inventory_time() {
+    assert_eq!(ai_queue_eta(2, 2500, 20.0, 2498), None);
+    assert_eq!(ai_queue_eta(10, 100, 20.0, 2490), Some(180));
+    assert_eq!(ai_queue_eta(10, 438365, 20.0, 2490), Some(4980));
+    assert_eq!(ai_queue_eta(100, 100, 200.0, 2400), None);
+  }
+
+  #[test]
+  fn application_resources_are_not_business_documents() {
+    assert!(inside_app_bundle(Path::new("/Applications/Test.app/Contents/license.txt")));
+    assert!(inside_app_bundle(Path::new("/Users/test/Apps/Test.APP/Contents/data.json")));
+    assert!(!inside_app_bundle(Path::new("/Users/test/Documents/invoice.txt")));
+    assert!(!inside_app_bundle(Path::new("/Users/test/Documents/app/invoice.txt")));
   }
 
   #[test]

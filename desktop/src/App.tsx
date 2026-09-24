@@ -848,7 +848,7 @@ export default function App() {
             <article>
               <div>
                 <b>Full Scan confirmation</b>
-                <small>CashPatch will locally hash and inspect supported business files for duplicates, exposed-secret file risks and efficiency issues. It will never edit or delete anything.</small>
+                <small>CashPatch first inventories files and runs deterministic checks, then reviews document contents with local AI. Application bundle resources are excluded from business content review. Identical document text is reviewed once. At most 2,500 AI document attempts run per scan. It will never edit or delete anything.</small>
               </div>
               <label><input type="checkbox" checked={fullConsent} onChange={e => setFullConsent(e.target.checked)} /> I confirm the local read-only Full Scan</label>
             </article>
@@ -861,7 +861,7 @@ export default function App() {
           <progress max="100" value={scanSnapshot.progressPercent} style={{ width: '100%' }} />
           <div className="status-line"><span>Files scanned</span><strong>{scanSnapshot.filesSeen.toLocaleString()}</strong></div>
           <div className="status-line"><span>Findings</span><strong>{scanSnapshot.findingsCount}</strong></div>
-          <div className="status-line"><span>ETA</span><strong>{formatEta(scanSnapshot.etaSeconds)}</strong></div>
+          <div className="status-line"><span>Estimated document review remaining</span><strong>{scanSnapshot.etaSeconds == null ? "Calculating…" : formatEta(scanSnapshot.etaSeconds)}</strong></div>
           <div className="status-line"><span>Elapsed</span><strong>{formatEta(scanSnapshot.elapsedSeconds)}</strong></div>
           <p className="status">{scanSnapshot.currentItem ?? 'Scanning…'}</p>
           <div className="button-row">
