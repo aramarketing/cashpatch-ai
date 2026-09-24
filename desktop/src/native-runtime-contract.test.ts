@@ -54,8 +54,8 @@ describe('native desktop runtime contracts', () => {
   })
 
   it('detects supported local AI only through loopback endpoints', () => {
-    expect(rustSource).toContain('http://127.0.0.1:11434/api/tags')
-    expect(rustSource).toContain('http://127.0.0.1:1234/v1/models')
+    expect(rustSource).toContain('local_ai::local_ai_models')
+    expect(rustSource).toContain('!models.is_empty()')
     expect(rustSource).not.toContain('http://0.0.0.0:11434')
     expect(rustSource).not.toContain('http://0.0.0.0:1234')
   })

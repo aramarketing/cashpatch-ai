@@ -307,7 +307,18 @@ fn extract_pdf_text(path: &Path, len: u64) -> Result<Option<String>, String> {
   }
 }
 
+// Third-party document parsers may panic on malformed/unsupported input.
+// A single document must not kill the detached scan worker.
+fn isolate_document_failure<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+  std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+    .unwrap_or_else(|_| Err("Document parser failed unexpectedly; this file was not reviewed.".to_string()))
+}
+
 pub(crate) fn extract_document_text(path: &Path, len: u64) -> Result<Option<String>, String> {
+  isolate_document_failure(|| extract_document_text_inner(path, len))
+}
+
+fn extract_document_text_inner(path: &Path, len: u64) -> Result<Option<String>, String> {
   if supported_plaintext_extension(path) {
     read_bounded_plaintext(path, len)
   } else if supported_archive_extension(path) {
@@ -326,6 +337,14 @@ pub fn analyze_document(path: &Path, len: u64) -> Result<Option<DocumentSignals>
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn parser_panic_does_not_stop_following_documents() {
+    let bad: Result<Option<String>, String> = isolate_document_failure(|| panic!("synthetic parser failure"));
+    assert!(bad.unwrap_err().contains("not reviewed"));
+    let next = isolate_document_failure(|| Ok(analyze_text("Invoice number: INV-777\nTotal: 49.00 EUR"))).unwrap();
+    assert_eq!(next.invoice.unwrap().invoice_number, "INV-777");
+  }
 
   #[test]
   fn extracts_german_invoice_number_and_total() {

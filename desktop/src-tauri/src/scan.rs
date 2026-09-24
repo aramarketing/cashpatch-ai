@@ -116,6 +116,7 @@ pub struct ScanSnapshot {
   pub scan_id: Option<String>,
   pub mode: String,
   pub phase: String,
+  pub work_stage: String,
   pub current_item: Option<String>,
   pub files_seen: u64,
   pub directories_seen: u64,
@@ -130,6 +131,8 @@ pub struct ScanSnapshot {
   pub quick_plan: Option<QuickScanPlan>,
   pub findings: Vec<LocalFinding>,
   pub error: Option<String>,
+  pub coverage_warnings: Vec<String>,
+  pub ai_documents_reviewed: u64,
 }
 
 #[derive(Serialize)]
@@ -156,6 +159,7 @@ impl Default for ScanRuntime {
         scan_id: None,
         mode: "none".to_string(),
         phase: "idle".to_string(),
+        work_stage: "idle".to_string(),
         current_item: None,
         files_seen: 0,
         directories_seen: 0,
@@ -170,6 +174,8 @@ impl Default for ScanRuntime {
         quick_plan: None,
         findings: Vec::new(),
         error: None,
+        coverage_warnings: Vec::new(),
+        ai_documents_reviewed: 0,
       },
       started_at: None,
       roots: Vec::new(),
@@ -226,6 +232,31 @@ fn default_roots() -> Vec<PathBuf> {
   roots.sort();
   roots.dedup();
   roots.into_iter().filter(|p| p.exists()).collect()
+}
+
+// An explicitly selected scope must never expand to the whole computer.
+fn resolve_roots(requested: Vec<String>) -> Result<Vec<PathBuf>, String> {
+  let candidates = if requested.is_empty() {
+    default_roots()
+  } else {
+    requested.into_iter().map(PathBuf::from).collect()
+  };
+  let mut roots = Vec::new();
+  for path in candidates {
+    let canonical = path.canonicalize().map_err(|_| format!("Scan folder is unavailable: {}", path.display()))?;
+    if !canonical.is_dir() {
+      return Err(format!("Scan root must be a folder: {}", path.display()));
+    }
+    roots.push(canonical);
+  }
+  roots.sort();
+  roots.dedup();
+  let selected = roots.clone();
+  roots.retain(|path| !selected.iter().any(|parent| parent != path && path.starts_with(parent)));
+  if roots.is_empty() {
+    return Err("No readable scan roots are available".to_string());
+  }
+  Ok(roots)
 }
 
 fn skip_entry(entry: &DirEntry) -> bool {
@@ -333,22 +364,34 @@ fn local_ai_review_document(
   local_ai: &FullScanLocalAi,
   path: &Path,
   text: String,
-) -> Vec<LocalFinding> {
+  cancel: &AtomicBool,
+) -> Result<(Vec<LocalFinding>, bool), String> {
   let task = format!(
     "Review this user-approved local business document for contradictions, unresolved obligations, duplicate or suspicious costs, contract or invoice anomalies, security concerns and efficiency risks. Source path: {}. Do not execute or recommend autonomous changes.",
     path.display()
   );
-  let analysis = tauri::async_runtime::block_on(crate::local_ai::local_ai_analyze_text(
-    local_ai.provider.clone(),
-    local_ai.endpoint.clone(),
-    local_ai.model.clone(),
-    text,
-    Some(task),
-    true,
-  ));
-  let Ok(analysis) = analysis else { return Vec::new(); };
+  let ai = local_ai.clone();
+  let (sender, receiver) = std::sync::mpsc::channel();
+  let request = tauri::async_runtime::spawn(async move {
+    let result = crate::local_ai::local_ai_analyze_text(
+      ai.provider, ai.endpoint, ai.model, text, Some(task), true,
+    ).await;
+    let _ = sender.send(result);
+  });
+  let analysis = loop {
+    if cancel.load(Ordering::Relaxed) {
+      request.abort();
+      return Err("Local AI review cancelled".to_string());
+    }
+    match receiver.recv_timeout(Duration::from_millis(100)) {
+      Ok(result) => break result?,
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(_) => return Err("Local AI review task stopped".to_string()),
+    }
+  };
+  let truncated = analysis.input_truncated;
 
-  analysis.findings.into_iter().map(|finding| LocalFinding {
+  let findings = analysis.findings.into_iter().map(|finding| LocalFinding {
     id: Uuid::new_v4().to_string(),
     category: format!("local_ai_review:{}", finding.category),
     severity: finding.severity,
@@ -362,7 +405,8 @@ fn local_ai_review_document(
       "Review the source manually. {} CashPatch will not execute, edit, send, delete, pay or otherwise change anything.",
       finding.remediation
     ),
-  }).collect()
+  }).collect();
+  Ok((findings, truncated))
 }
 
 fn format_eta(seconds: u64) -> String {
@@ -390,6 +434,22 @@ fn progress_percent(current: u64, total: u64) -> f64 {
   }
 }
 
+// App resources remain in the file inventory and software security checks, but
+// licenses and bundled assets are not user business documents.
+fn inside_app_bundle(path: &Path) -> bool {
+  path.ancestors().skip(1).any(|parent| {
+    parent.extension().and_then(|ext| ext.to_str())
+      .map(|ext| ext.eq_ignore_ascii_case("app")).unwrap_or(false)
+  })
+}
+
+// Only time spent processing this queue contributes: pauses and filesystem
+// enumeration must never be extrapolated over local model requests.
+fn ai_queue_eta(completed: u64, total: u64, active_seconds: f64, attempts_left: u64) -> Option<u64> {
+  if completed < 3 || completed >= total { return None; }
+  Some((active_seconds / completed as f64 * (total - completed).min(attempts_left) as f64).ceil() as u64)
+}
+
 fn hash_file(path: &Path) -> Result<String, String> {
   let mut file = File::open(path).map_err(|e| e.to_string())?;
   let mut hasher = Hasher::new();
@@ -414,6 +474,24 @@ fn wait_if_paused(pause: &AtomicBool, cancel: &AtomicBool) -> bool {
     thread::sleep(Duration::from_millis(120));
   }
   !cancel.load(Ordering::Relaxed)
+}
+
+struct ScanWorkerGuard(AppHandle);
+impl Drop for ScanWorkerGuard {
+  fn drop(&mut self) {
+    if !thread::panicking() { return; }
+    {
+      let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      state.snapshot.phase = "failed".to_string();
+      state.snapshot.paused = false;
+      state.snapshot.error = Some("The scan worker stopped unexpectedly. This scan is incomplete; restart the scan and review coverage warnings.".to_string());
+    }
+    runtime().clear_poison();
+    // Recover the snapshot even if the panic poisoned the runtime lock.
+    let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = scan_journal::persist_snapshot(&state.snapshot, &state.roots);
+    let _ = self.0.emit("scan-progress", state.snapshot.clone());
+  }
 }
 
 fn set_terminal_phase(app: &AppHandle, phase: &str) {
@@ -478,19 +556,7 @@ pub fn quick_scan_start(
     extra_roots
   };
 
-  let mut roots = default_roots();
-  for raw in requested_roots {
-    let path = PathBuf::from(raw);
-    if path.exists() {
-      roots.push(path);
-    }
-  }
-  roots.sort();
-  roots.dedup();
-
-  if roots.is_empty() {
-    return Err("No readable scan roots are available".to_string());
-  }
+  let roots = resolve_roots(requested_roots)?;
 
   let scan_id = Uuid::new_v4().to_string();
   let pause = Arc::new(AtomicBool::new(false));
@@ -506,6 +572,7 @@ pub fn quick_scan_start(
       scan_id: Some(scan_id.clone()),
       mode: "quick".to_string(),
       phase: "quick_scanning".to_string(),
+      work_stage: "inventory".to_string(),
       current_item: None,
       files_seen: 0,
       directories_seen: 0,
@@ -520,6 +587,8 @@ pub fn quick_scan_start(
       quick_plan: None,
       findings: Vec::new(),
       error: None,
+      coverage_warnings: Vec::new(),
+      ai_documents_reviewed: 0,
     };
     state.started_at = Some(Instant::now());
     state.roots = roots.clone();
@@ -638,7 +707,7 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     return Err("Explicit Full Scan confirmation is required".to_string());
   }
 
-  let (roots, quick_plan, pause, cancel) = {
+  let (roots, pause, cancel) = {
     let mut state = runtime().lock().map_err(|_| "Scan state is unavailable")?;
     if state.snapshot.scan_id.as_deref() != Some(scan_id.as_str()) {
       return Err("Quick Scan session does not match".to_string());
@@ -649,6 +718,8 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
 
     state.snapshot.mode = "full".to_string();
     state.snapshot.phase = "full_scanning".to_string();
+    state.snapshot.work_stage = "inventory".to_string();
+    state.snapshot.eta_seconds = None;
     state.snapshot.current_item = None;
     state.snapshot.files_seen = 0;
     state.snapshot.directories_seen = 0;
@@ -667,16 +738,15 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
 
     (
       state.roots.clone(),
-      state.snapshot.quick_plan.clone(),
       state.pause.clone(),
       state.cancel.clone(),
     )
   };
 
-  let expected_files = quick_plan.as_ref().map(|p| p.files_seen).unwrap_or(0);
   emit_snapshot(&app);
 
   thread::spawn(move || {
+    let _worker_guard = ScanWorkerGuard(app.clone());
     let started = Instant::now();
     let mut files = 0_u64;
     let mut dirs = 0_u64;
@@ -689,6 +759,17 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     let mut findings = Vec::<LocalFinding>::new();
     let local_ai = discover_full_scan_local_ai();
     let mut local_ai_documents_reviewed = 0_u64;
+    let mut ai_failures = 0_u64;
+    let mut ai_truncated = 0_u64;
+    let mut ai_queue = Vec::<(PathBuf, u64)>::new();
+    let mut failed_documents = HashSet::<PathBuf>::new();
+    let mut app_resources_skipped = 0_u64;
+    let mut ai_duplicate_contents = 0_u64;
+    let mut ai_content_hashes = HashSet::<String>::new();
+    let mut warnings = Vec::<String>::new();
+    if local_ai.is_none() {
+      warnings.push("No local AI model is available. Only deterministic checks ran; document meaning was not reviewed by AI.".to_string());
+    }
 
     if let Some(ai) = &local_ai {
       if let Ok(mut state) = runtime().lock() {
@@ -739,8 +820,16 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                 });
               }
 
-              if business_extension(path) {
-                if let Ok(Some(signals)) = document_analysis::analyze_document(path, len) {
+              if business_extension(path) && inside_app_bundle(path) {
+                app_resources_skipped += 1;
+              }
+              if business_extension(path) && !inside_app_bundle(path) {
+                if let Ok(mut state) = runtime().lock() {
+                  state.snapshot.current_item = Some(format!("Reading document: {}", path.display()));
+                }
+                let analysis = document_analysis::analyze_document(path, len);
+                if analysis.is_err() { failed_documents.insert(path.to_path_buf()); }
+                if let Ok(Some(signals)) = analysis {
                   if let Some(invoice) = signals.invoice {
                     if let Some((first_path, first_amount)) = invoice_numbers.get(&invoice.invoice_number) {
                       if first_path != path && reported_invoice_numbers.insert(invoice.invoice_number.clone()) {
@@ -784,22 +873,9 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                 }
               }
 
-              if business_extension(path)
-                && !sensitive_filename(path)
-                && local_ai_documents_reviewed < MAX_LOCAL_AI_DOCUMENTS_PER_SCAN
-              {
-                if let (Some(ai), Ok(Some(text))) =
-                  (local_ai.as_ref(), document_analysis::extract_document_text(path, len))
-                {
-                  if !text.trim().is_empty() {
-                    local_ai_documents_reviewed = local_ai_documents_reviewed.saturating_add(1);
-                    if let Ok(mut state) = runtime().lock() {
-                      state.snapshot.current_item = Some(format!("Local AI advisory review: {}", path.display()));
-                    }
-                    emit_snapshot(&app);
-                    findings.extend(local_ai_review_document(ai, path, text));
-                  }
-                }
+              if business_extension(path) && !inside_app_bundle(path)
+                && !sensitive_filename(path) && !failed_documents.contains(path) && local_ai.is_some() {
+                ai_queue.push((path.to_path_buf(), len));
               }
 
               if business_extension(path) && len > 0 && len <= CONTENT_HASH_MAX_BYTES {
@@ -833,17 +909,15 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
               }
             }
 
-            let percent = progress_percent(files, expected_files);
+            // Quick Scan is capped and cannot supply a full-inventory denominator.
+            // Inventory therefore has no percentage; the UI shows live counts.
+            let percent = 0.0;
             let elapsed = started.elapsed().as_secs();
-            let eta = if files > 0 && expected_files > files {
-              let rate = files as f64 / started.elapsed().as_secs_f64().max(1.0);
-              Some(((expected_files - files) as f64 / rate.max(0.1)) as u64)
-            } else {
-              None
-            };
+            // The document queue is not yet known; do not invent a total ETA.
+            let eta = None;
 
             if let Ok(mut state) = runtime().lock() {
-              state.snapshot.current_item = Some(path.display().to_string());
+              state.snapshot.current_item = Some(format!("File inventory and deterministic checks: {}", path.display()));
               state.snapshot.files_seen = files;
               state.snapshot.directories_seen = dirs;
               state.snapshot.bytes_seen = bytes;
@@ -866,6 +940,86 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       }
     }
 
+    if !wait_if_paused(&pause, &cancel) {
+      set_terminal_phase(&app, "cancelled");
+      return;
+    }
+    if let Ok(mut state) = runtime().lock() {
+      state.snapshot.work_stage = "documents".to_string();
+      state.snapshot.progress_percent = 0.0;
+      state.snapshot.files_seen = files;
+      state.snapshot.directories_seen = dirs;
+      state.snapshot.bytes_seen = bytes;
+    }
+    let queue_total = ai_queue.len() as u64;
+    let mut ai_active_seconds = 0.0;
+    for (index, (path, len)) in ai_queue.into_iter().enumerate() {
+      if !wait_if_paused(&pause, &cancel) {
+        set_terminal_phase(&app, "cancelled");
+        return;
+      }
+      if local_ai_documents_reviewed >= MAX_LOCAL_AI_DOCUMENTS_PER_SCAN { break; }
+      if let Ok(mut state) = runtime().lock() {
+        state.snapshot.current_item = Some(format!("Document review: {} of {} candidates · {}", index + 1, queue_total, path.display()));
+        state.snapshot.progress_percent = progress_percent(index as u64, queue_total).max(progress_percent(local_ai_documents_reviewed, MAX_LOCAL_AI_DOCUMENTS_PER_SCAN));
+        state.snapshot.eta_seconds = ai_queue_eta(index as u64, queue_total, ai_active_seconds, MAX_LOCAL_AI_DOCUMENTS_PER_SCAN.saturating_sub(local_ai_documents_reviewed));
+        state.snapshot.elapsed_seconds = started.elapsed().as_secs();
+        state.snapshot.ai_documents_reviewed = local_ai_documents_reviewed.saturating_sub(ai_failures);
+        state.snapshot.findings_count = findings.len() as u64 + duplicate_groups.len() as u64;
+      }
+      emit_snapshot(&app);
+      let item_started = Instant::now();
+      let extracted = document_analysis::extract_document_text(&path, len);
+      if extracted.is_err() { failed_documents.insert(path.clone()); }
+      if let (Some(ai), Ok(Some(text))) = (local_ai.as_ref(), extracted) {
+        if !text.trim().is_empty() {
+          // Hash the entire extracted text, not just the truncated model input.
+          let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+          if ai_content_hashes.contains(&hash) {
+            ai_duplicate_contents += 1;
+          } else {
+            local_ai_documents_reviewed += 1;
+            match local_ai_review_document(ai, &path, text, &cancel) {
+              Ok((items, truncated)) => {
+                findings.extend(items);
+                ai_truncated += u64::from(truncated);
+                ai_content_hashes.insert(hash);
+              }
+              Err(_) => ai_failures += 1,
+            }
+          }
+        }
+      }
+      ai_active_seconds += item_started.elapsed().as_secs_f64();
+    }
+    if !wait_if_paused(&pause, &cancel) {
+      set_terminal_phase(&app, "cancelled");
+      return;
+    }
+    if !failed_documents.is_empty() {
+      warnings.push(format!("{} documents could not be parsed and were not fully reviewed. Each is listed as an incomplete document finding.", failed_documents.len()));
+      for path in &failed_documents {
+        findings.push(LocalFinding {
+          id: Uuid::new_v4().to_string(), category: "coverage".to_string(), severity: "info".to_string(),
+          title: "Document could not be fully reviewed".to_string(),
+          summary: "The local document parser failed. This file is not a clean result.".to_string(),
+          evidence: path.display().to_string(),
+          remediation: "Open and review the original manually. CashPatch did not modify the file.".to_string(),
+        });
+      }
+    }
+    if app_resources_skipped > 0 {
+      warnings.push(format!("{app_resources_skipped} application resource files were inventoried but excluded from business document content review. Software security checks are separate."));
+    }
+    if ai_duplicate_contents > 0 {
+      warnings.push(format!("{ai_duplicate_contents} documents had identical extracted text to an already reviewed document. AI reviewed each unique text once; findings refer to the representative file."));
+    }
+    if let Ok(mut state) = runtime().lock() {
+      state.snapshot.work_stage = "finalizing".to_string();
+      state.snapshot.current_item = Some("Checking system security and preparing the report…".to_string());
+      state.snapshot.eta_seconds = None;
+    }
+    emit_snapshot(&app);
     for (evidence, count) in duplicate_groups {
       findings.push(LocalFinding {
         id: Uuid::new_v4().to_string(),
@@ -878,6 +1032,10 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       });
     }
 
+    if !crate::inventory::vulnerability::vulnerability_database_status(app.clone())
+      .map(|status| status.available).unwrap_or(false) {
+      warnings.push("Known software vulnerabilities were not checked: no usable local vulnerability database is installed.".to_string());
+    }
     if let Ok(vulnerabilities) =
       crate::inventory::vulnerability::analyze_current_system_from_local_database(&app)
     {
@@ -941,8 +1099,18 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       });
     }
 
+    if ai_failures > 0 {
+      warnings.push(format!("Local AI analysis failed for {ai_failures} documents. These are not clean results; retry after checking the local model."));
+    }
+    if ai_truncated > 0 {
+      warnings.push(format!("{ai_truncated} documents exceeded the AI input window; only their first approximately 12,000 characters were reviewed."));
+    }
+    if local_ai_documents_reviewed >= MAX_LOCAL_AI_DOCUMENTS_PER_SCAN {
+      warnings.push("The 2,500-document AI safety limit was reached. Later documents may not have received AI review.".to_string());
+    }
     if let Ok(mut state) = runtime().lock() {
       state.snapshot.phase = "completed".to_string();
+      state.snapshot.work_stage = "completed".to_string();
       state.snapshot.current_item = None;
       state.snapshot.files_seen = files;
       state.snapshot.directories_seen = dirs;
@@ -953,6 +1121,8 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       state.snapshot.elapsed_seconds = started.elapsed().as_secs();
       state.snapshot.eta_seconds = Some(0);
       state.snapshot.findings = findings;
+      state.snapshot.coverage_warnings = warnings;
+      state.snapshot.ai_documents_reviewed = local_ai_documents_reviewed.saturating_sub(ai_failures);
       state.snapshot.paused = false;
     }
     emit_snapshot(&app);
@@ -1034,6 +1204,12 @@ pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
       lines.push(format!("- Data mapped: {} bytes", snapshot.bytes_seen));
       lines.push(format!("- Permission boundaries: {}", snapshot.permission_denied));
       lines.push(format!("- Findings: {}", snapshot.findings_count));
+      lines.push(format!("- Documents successfully reviewed by local AI: {}", snapshot.ai_documents_reviewed));
+      lines.push(String::new());
+      lines.push("## Coverage limitations".to_string());
+      for warning in &snapshot.coverage_warnings {
+        lines.push(format!("- {warning}"));
+      }
       lines.push(format!("- Duration: {} seconds", snapshot.elapsed_seconds));
       lines.push(String::new());
       lines.push("## Findings".to_string());
@@ -1070,4 +1246,40 @@ pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
   }
 
   std::fs::write(destination, body).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod scope_tests {
+  use super::*;
+
+  #[test]
+  fn selected_scope_never_adds_default_roots_and_deduplicates_nested_paths() {
+    let root = std::env::temp_dir().join(format!("cashpatch-scope-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    let result = resolve_roots(vec![root.display().to_string(), root.join("nested").display().to_string()]).unwrap();
+    assert_eq!(result, vec![root.canonicalize().unwrap()]);
+    std::fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn eta_uses_document_queue_and_excludes_inventory_time() {
+    assert_eq!(ai_queue_eta(2, 2500, 20.0, 2498), None);
+    assert_eq!(ai_queue_eta(10, 100, 20.0, 2490), Some(180));
+    assert_eq!(ai_queue_eta(10, 438365, 20.0, 2490), Some(4980));
+    assert_eq!(ai_queue_eta(100, 100, 200.0, 2400), None);
+  }
+
+  #[test]
+  fn application_resources_are_not_business_documents() {
+    assert!(inside_app_bundle(Path::new("/Applications/Test.app/Contents/license.txt")));
+    assert!(inside_app_bundle(Path::new("/Users/test/Apps/Test.APP/Contents/data.json")));
+    assert!(!inside_app_bundle(Path::new("/Users/test/Documents/invoice.txt")));
+    assert!(!inside_app_bundle(Path::new("/Users/test/Documents/app/invoice.txt")));
+  }
+
+  #[test]
+  fn missing_explicit_scope_fails_instead_of_scanning_home() {
+    let missing = std::env::temp_dir().join(format!("cashpatch-missing-{}", Uuid::new_v4()));
+    assert!(resolve_roots(vec![missing.display().to_string()]).is_err());
+  }
 }
