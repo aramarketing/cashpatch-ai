@@ -116,6 +116,7 @@ pub struct ScanSnapshot {
   pub scan_id: Option<String>,
   pub mode: String,
   pub phase: String,
+  pub work_stage: String,
   pub current_item: Option<String>,
   pub files_seen: u64,
   pub directories_seen: u64,
@@ -158,6 +159,7 @@ impl Default for ScanRuntime {
         scan_id: None,
         mode: "none".to_string(),
         phase: "idle".to_string(),
+        work_stage: "idle".to_string(),
         current_item: None,
         files_seen: 0,
         directories_seen: 0,
@@ -474,6 +476,24 @@ fn wait_if_paused(pause: &AtomicBool, cancel: &AtomicBool) -> bool {
   !cancel.load(Ordering::Relaxed)
 }
 
+struct ScanWorkerGuard(AppHandle);
+impl Drop for ScanWorkerGuard {
+  fn drop(&mut self) {
+    if !thread::panicking() { return; }
+    {
+      let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      state.snapshot.phase = "failed".to_string();
+      state.snapshot.paused = false;
+      state.snapshot.error = Some("The scan worker stopped unexpectedly. This scan is incomplete; restart the scan and review coverage warnings.".to_string());
+    }
+    runtime().clear_poison();
+    // Recover the snapshot even if the panic poisoned the runtime lock.
+    let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = scan_journal::persist_snapshot(&state.snapshot, &state.roots);
+    let _ = self.0.emit("scan-progress", state.snapshot.clone());
+  }
+}
+
 fn set_terminal_phase(app: &AppHandle, phase: &str) {
   if let Ok(mut state) = runtime().lock() {
     state.snapshot.phase = phase.to_string();
@@ -552,6 +572,7 @@ pub fn quick_scan_start(
       scan_id: Some(scan_id.clone()),
       mode: "quick".to_string(),
       phase: "quick_scanning".to_string(),
+      work_stage: "inventory".to_string(),
       current_item: None,
       files_seen: 0,
       directories_seen: 0,
@@ -686,7 +707,7 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     return Err("Explicit Full Scan confirmation is required".to_string());
   }
 
-  let (roots, quick_plan, pause, cancel) = {
+  let (roots, pause, cancel) = {
     let mut state = runtime().lock().map_err(|_| "Scan state is unavailable")?;
     if state.snapshot.scan_id.as_deref() != Some(scan_id.as_str()) {
       return Err("Quick Scan session does not match".to_string());
@@ -697,6 +718,8 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
 
     state.snapshot.mode = "full".to_string();
     state.snapshot.phase = "full_scanning".to_string();
+    state.snapshot.work_stage = "inventory".to_string();
+    state.snapshot.eta_seconds = None;
     state.snapshot.current_item = None;
     state.snapshot.files_seen = 0;
     state.snapshot.directories_seen = 0;
@@ -715,16 +738,15 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
 
     (
       state.roots.clone(),
-      state.snapshot.quick_plan.clone(),
       state.pause.clone(),
       state.cancel.clone(),
     )
   };
 
-  let expected_files = quick_plan.as_ref().map(|p| p.files_seen).unwrap_or(0);
   emit_snapshot(&app);
 
   thread::spawn(move || {
+    let _worker_guard = ScanWorkerGuard(app.clone());
     let started = Instant::now();
     let mut files = 0_u64;
     let mut dirs = 0_u64;
@@ -740,6 +762,7 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     let mut ai_failures = 0_u64;
     let mut ai_truncated = 0_u64;
     let mut ai_queue = Vec::<(PathBuf, u64)>::new();
+    let mut failed_documents = HashSet::<PathBuf>::new();
     let mut app_resources_skipped = 0_u64;
     let mut ai_duplicate_contents = 0_u64;
     let mut ai_content_hashes = HashSet::<String>::new();
@@ -801,7 +824,12 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                 app_resources_skipped += 1;
               }
               if business_extension(path) && !inside_app_bundle(path) {
-                if let Ok(Some(signals)) = document_analysis::analyze_document(path, len) {
+                if let Ok(mut state) = runtime().lock() {
+                  state.snapshot.current_item = Some(format!("Reading document: {}", path.display()));
+                }
+                let analysis = document_analysis::analyze_document(path, len);
+                if analysis.is_err() { failed_documents.insert(path.to_path_buf()); }
+                if let Ok(Some(signals)) = analysis {
                   if let Some(invoice) = signals.invoice {
                     if let Some((first_path, first_amount)) = invoice_numbers.get(&invoice.invoice_number) {
                       if first_path != path && reported_invoice_numbers.insert(invoice.invoice_number.clone()) {
@@ -846,7 +874,7 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
               }
 
               if business_extension(path) && !inside_app_bundle(path)
-                && !sensitive_filename(path) && local_ai.is_some() {
+                && !sensitive_filename(path) && !failed_documents.contains(path) && local_ai.is_some() {
                 ai_queue.push((path.to_path_buf(), len));
               }
 
@@ -881,7 +909,9 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
               }
             }
 
-            let percent = progress_percent(files, expected_files) * 0.5;
+            // Quick Scan is capped and cannot supply a full-inventory denominator.
+            // Inventory therefore has no percentage; the UI shows live counts.
+            let percent = 0.0;
             let elapsed = started.elapsed().as_secs();
             // The document queue is not yet known; do not invent a total ETA.
             let eta = None;
@@ -914,6 +944,13 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       set_terminal_phase(&app, "cancelled");
       return;
     }
+    if let Ok(mut state) = runtime().lock() {
+      state.snapshot.work_stage = "documents".to_string();
+      state.snapshot.progress_percent = 0.0;
+      state.snapshot.files_seen = files;
+      state.snapshot.directories_seen = dirs;
+      state.snapshot.bytes_seen = bytes;
+    }
     let queue_total = ai_queue.len() as u64;
     let mut ai_active_seconds = 0.0;
     for (index, (path, len)) in ai_queue.into_iter().enumerate() {
@@ -924,7 +961,7 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       if local_ai_documents_reviewed >= MAX_LOCAL_AI_DOCUMENTS_PER_SCAN { break; }
       if let Ok(mut state) = runtime().lock() {
         state.snapshot.current_item = Some(format!("Document review: {} of {} candidates · {}", index + 1, queue_total, path.display()));
-        state.snapshot.progress_percent = 50.0 + progress_percent(index as u64, queue_total) * 0.5;
+        state.snapshot.progress_percent = progress_percent(index as u64, queue_total).max(progress_percent(local_ai_documents_reviewed, MAX_LOCAL_AI_DOCUMENTS_PER_SCAN));
         state.snapshot.eta_seconds = ai_queue_eta(index as u64, queue_total, ai_active_seconds, MAX_LOCAL_AI_DOCUMENTS_PER_SCAN.saturating_sub(local_ai_documents_reviewed));
         state.snapshot.elapsed_seconds = started.elapsed().as_secs();
         state.snapshot.ai_documents_reviewed = local_ai_documents_reviewed.saturating_sub(ai_failures);
@@ -932,7 +969,9 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       }
       emit_snapshot(&app);
       let item_started = Instant::now();
-      if let (Some(ai), Ok(Some(text))) = (local_ai.as_ref(), document_analysis::extract_document_text(&path, len)) {
+      let extracted = document_analysis::extract_document_text(&path, len);
+      if extracted.is_err() { failed_documents.insert(path.clone()); }
+      if let (Some(ai), Ok(Some(text))) = (local_ai.as_ref(), extracted) {
         if !text.trim().is_empty() {
           // Hash the entire extracted text, not just the truncated model input.
           let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
@@ -957,12 +996,30 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       set_terminal_phase(&app, "cancelled");
       return;
     }
+    if !failed_documents.is_empty() {
+      warnings.push(format!("{} documents could not be parsed and were not fully reviewed. Each is listed as an incomplete document finding.", failed_documents.len()));
+      for path in &failed_documents {
+        findings.push(LocalFinding {
+          id: Uuid::new_v4().to_string(), category: "coverage".to_string(), severity: "info".to_string(),
+          title: "Document could not be fully reviewed".to_string(),
+          summary: "The local document parser failed. This file is not a clean result.".to_string(),
+          evidence: path.display().to_string(),
+          remediation: "Open and review the original manually. CashPatch did not modify the file.".to_string(),
+        });
+      }
+    }
     if app_resources_skipped > 0 {
       warnings.push(format!("{app_resources_skipped} application resource files were inventoried but excluded from business document content review. Software security checks are separate."));
     }
     if ai_duplicate_contents > 0 {
       warnings.push(format!("{ai_duplicate_contents} documents had identical extracted text to an already reviewed document. AI reviewed each unique text once; findings refer to the representative file."));
     }
+    if let Ok(mut state) = runtime().lock() {
+      state.snapshot.work_stage = "finalizing".to_string();
+      state.snapshot.current_item = Some("Checking system security and preparing the report…".to_string());
+      state.snapshot.eta_seconds = None;
+    }
+    emit_snapshot(&app);
     for (evidence, count) in duplicate_groups {
       findings.push(LocalFinding {
         id: Uuid::new_v4().to_string(),
@@ -1053,6 +1110,7 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     }
     if let Ok(mut state) = runtime().lock() {
       state.snapshot.phase = "completed".to_string();
+      state.snapshot.work_stage = "completed".to_string();
       state.snapshot.current_item = None;
       state.snapshot.files_seen = files;
       state.snapshot.directories_seen = dirs;

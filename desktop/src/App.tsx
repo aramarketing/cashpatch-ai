@@ -1,3 +1,4 @@
+import { scanProgressView } from './scan-progress'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -139,6 +140,7 @@ type VaultEntrySummary = {
 }
 
 type ScanSnapshot = {
+  workStage?: string
   scanId?: string | null
   mode: string
   phase: string
@@ -797,7 +799,7 @@ export default function App() {
           </article>
         </div>}
 
-        {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled' || scanSnapshot.phase === 'completed') && <>
+        {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled' || scanSnapshot.phase === 'failed' || scanSnapshot.phase === 'completed') && <>
           <div className="permission-list">
             <article>
               <div>
@@ -843,7 +845,7 @@ export default function App() {
           <p>{scanSnapshot.quickPlan.permissionDenied
             ? `${scanSnapshot.quickPlan.permissionDenied} locations could not be read with current OS permissions. CashPatch will not bypass them.`
             : 'No permission boundary was encountered in the mapped scope.'}</p>
-          {scanSnapshot.quickPlan.truncated && <p className="status">Quick Scan reached its safety cap. The Full Scan estimate is conservative.</p>}
+          {scanSnapshot.quickPlan.truncated && <p className="status">Quick Scan reached its safety cap. More files may exist. Full Scan will show file counts until enumeration finishes; no reliable total percentage is available during that stage.</p>}
           <div className="permission-list">
             <article>
               <div>
@@ -856,12 +858,14 @@ export default function App() {
           <button disabled={!fullConsent} onClick={startFullScan}>Start Full Scan</button>
         </>}
 
+        {scanSnapshot?.phase === 'failed' && <p role="alert" className="status">{scanSnapshot.error ?? 'Scan interrupted. Results are incomplete.'}</p>}
+
         {scanSnapshot?.phase === 'full_scanning' && <>
-          <div className="status-line"><span>Progress</span><strong>{scanSnapshot.progressPercent.toFixed(1)}%</strong></div>
-          <progress max="100" value={scanSnapshot.progressPercent} style={{ width: '100%' }} />
+          <div className="status-line"><span>Scan stage</span><strong>{scanProgressView(scanSnapshot).label}</strong></div>
+          <progress aria-label={scanProgressView(scanSnapshot).label} max="100" value={scanProgressView(scanSnapshot).percent} style={{ width: '100%' }} />
           <div className="status-line"><span>Files scanned</span><strong>{scanSnapshot.filesSeen.toLocaleString()}</strong></div>
           <div className="status-line"><span>Findings</span><strong>{scanSnapshot.findingsCount}</strong></div>
-          <div className="status-line"><span>Estimated document review remaining</span><strong>{scanSnapshot.etaSeconds == null ? "Calculating…" : formatEta(scanSnapshot.etaSeconds)}</strong></div>
+          <div className="status-line"><span>Estimated document review remaining</span><strong>{scanSnapshot.paused ? "Paused" : scanSnapshot.workStage === "inventory" ? "Available during document review" : scanSnapshot.workStage === "finalizing" ? "Preparing report…" : scanSnapshot.etaSeconds == null ? "Calculating…" : formatEta(scanSnapshot.etaSeconds)}</strong></div>
           <div className="status-line"><span>Elapsed</span><strong>{formatEta(scanSnapshot.elapsedSeconds)}</strong></div>
           <p className="status">{scanSnapshot.currentItem ?? 'Scanning…'}</p>
           <div className="button-row">
