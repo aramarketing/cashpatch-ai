@@ -6,6 +6,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { check } from '@tauri-apps/plugin-updater'
 import { notifyFinding } from './notifications'
+import { ConversationReviewPanel } from './ConversationReviewPanel'
 
 type PairStart = {
   pairingCode: string
@@ -155,6 +156,8 @@ type ScanSnapshot = {
   quickPlan?: QuickScanPlan | null
   findings: LocalFinding[]
   error?: string | null
+  coverageWarnings: string[]
+  aiDocumentsReviewed: number
 }
 
 type ScanRecovery = {
@@ -256,6 +259,8 @@ export default function App() {
   const [recoveryConsent, setRecoveryConsent] = useState(false)
   const [activityMessage, setActivityMessage] = useState('')
   const [quickConsent, setQuickConsent] = useState(false)
+  const [scanScope, setScanScope] = useState<'folder' | 'computer'>('folder')
+  const [scanMessage, setScanMessage] = useState('')
   const [fullConsent, setFullConsent] = useState(false)
   const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null)
   const [vaultEntries, setVaultEntries] = useState<VaultEntrySummary[]>([])
@@ -486,8 +491,14 @@ export default function App() {
   const startQuickScan = async () => {
     if (!quickConsent) return
     setSection('scan')
-    const extraRoots = approvedFolder ? [approvedFolder] : []
+    if (scanScope === 'folder' && !approvedFolder) { setScanMessage('Choose a scan folder first.'); return }
+    const extraRoots = scanScope === 'folder' && approvedFolder ? [approvedFolder] : []
+    setScanMessage('')
+    try {
     await invoke<string>('quick_scan_start', { consent: true, extraRoots, recoverInterrupted: false })
+    setQuickConsent(false)
+    setFullConsent(false)
+    } catch (error) { setScanMessage(String(error)) }
   }
 
   const resumeInterruptedScan = async () => {
@@ -513,17 +524,23 @@ export default function App() {
 
   const startFullScan = async () => {
     if (!fullConsent || !scanSnapshot?.scanId) return
+    setScanMessage('')
+    try {
     await invoke('full_scan_start', { scanId: scanSnapshot.scanId, consent: true })
+    setFullConsent(false)
+    } catch (error) { setScanMessage(String(error)) }
   }
 
   const pauseOrResumeScan = async () => {
     if (!scanSnapshot) return
     if (scanSnapshot.paused) await invoke('scan_resume')
     else await invoke('scan_pause')
+    await refreshScanState()
   }
 
   const cancelScan = async () => {
     await invoke('scan_cancel')
+    await refreshScanState()
   }
 
   const exportScanReport = async (format: 'markdown' | 'json') => {
@@ -534,7 +551,10 @@ export default function App() {
       filters: [{ name: format === 'markdown' ? 'Markdown' : 'JSON', extensions: [extension] }],
     })
     if (!path) return
-    await invoke('scan_export_report', { path, format })
+    try {
+      await invoke('scan_export_report', { path, format })
+      setScanMessage(`Report saved: ${path}`)
+    } catch (error) { setScanMessage(String(error)) }
   }
 
   const refreshVault = async () => {
@@ -761,6 +781,7 @@ export default function App() {
         <h2>Scan deeply. Change nothing.</h2>
         <p className="muted">CashPatch scans only after your explicit consent. Quick Scan inventories scope and estimates the Full Scan. Full Scan requires a second confirmation.</p>
 
+        {scanMessage && <p className="status" role="status">{scanMessage}</p>}
         {scanRecovery?.available && (!scanSnapshot || !['quick_scanning', 'full_scanning'].includes(scanSnapshot.phase)) && <div className="permission-list">
           <article>
             <div>
@@ -776,17 +797,23 @@ export default function App() {
           </article>
         </div>}
 
-        {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled') && <>
+        {(!scanSnapshot || scanSnapshot.phase === 'idle' || scanSnapshot.phase === 'cancelled' || scanSnapshot.phase === 'completed') && <>
           <div className="permission-list">
             <article>
               <div>
+                <b>Scan scope</b>
+                <label><input type="radio" name="scan-scope" checked={scanScope === 'folder'} onChange={() => { setScanScope('folder'); setQuickConsent(false) }} /> Selected folder only</label>
+                <small>{approvedFolder ?? 'Choose a folder before starting.'}</small>
+                <button className="secondary" onClick={() => { setQuickConsent(false); chooseFolder().catch(error => setScanMessage(String(error))) }}>Choose scan folder</button>
+                <label><input type="radio" name="scan-scope" checked={scanScope === 'computer'} onChange={() => { setScanScope('computer'); setQuickConsent(false) }} /> Computer: home folder, applications and startup locations</label>
+                <small>System metadata and security settings are checked in either mode. File contents are limited to the chosen scope.</small>
                 <b>Quick Scan consent</b>
                 <small>Metadata only: accessible files, folders, installed application locations and permission boundaries. No background scan.</small>
               </div>
               <label><input type="checkbox" checked={quickConsent} onChange={e => setQuickConsent(e.target.checked)} /> I consent to a local read-only Quick Scan</label>
             </article>
           </div>
-          <button disabled={!quickConsent} onClick={startQuickScan}>Start Quick Scan</button>
+          <button disabled={!quickConsent || (scanScope === 'folder' && !approvedFolder)} onClick={startQuickScan}>Start Quick Scan</button>
         </>}
 
         {scanSnapshot?.phase === 'quick_scanning' && <>
@@ -805,7 +832,7 @@ export default function App() {
           <div className="trust">
             <div><strong>{scanSnapshot.quickPlan.filesSeen.toLocaleString()}</strong><span>files mapped</span></div>
             <div><strong>{formatBytes(scanSnapshot.quickPlan.bytesSeen)}</strong><span>reachable data</span></div>
-            <div><strong>{scanSnapshot.quickPlan.estimatedFullLabel}</strong><span>estimated Full Scan</span></div>
+            <div><strong>{scanSnapshot.quickPlan.estimatedFullLabel}</strong><span>file-processing estimate; local AI adds time</span></div>
           </div>
           <div className="trust">
             <div><strong>{scanSnapshot.quickPlan.installedSoftwareSeen.toLocaleString()}</strong><span>installed programs</span></div>
@@ -849,6 +876,8 @@ export default function App() {
             <div><strong>{scanSnapshot.findingsCount}</strong><span>findings</span></div>
             <div><strong>{formatEta(scanSnapshot.elapsedSeconds)}</strong><span>scan duration</span></div>
           </div>
+          <p>Documents successfully reviewed by local AI: {scanSnapshot.aiDocumentsReviewed ?? 0}</p>
+          {(scanSnapshot.coverageWarnings ?? []).map(warning => <p className="status" key={warning}>Coverage limitation: {warning}</p>)}
           <div className="local-findings">
             {scanSnapshot.findings.map(finding => <article className="local-finding" key={finding.id}>
               <div className="local-finding-top"><span>{finding.category}</span><strong>{finding.severity}</strong></div>
@@ -1002,11 +1031,12 @@ export default function App() {
       {section === 'ai' && <section className="panel">
         <p className="eyebrow">LOCAL AI</p>
         <h2>Analysis stays on this computer.</h2>
+        <button className="secondary" onClick={refreshLocalDiscovery}>Refresh local models</button>
         <p className="muted">CashPatch never gives the local model write tools.</p>
         <div className="permission-list">
           {localAi.map(runtime => <article key={runtime.key}>
             <div><b>{runtime.name}</b><small>{runtime.endpoint}</small></div>
-            <span className={runtime.available ? 'ok-badge' : 'off-badge'}>{runtime.available ? 'Ready' : 'Not detected'}</span>
+            <span className={runtime.available ? 'ok-badge' : 'off-badge'}>{runtime.available ? 'Model available' : 'No usable model detected'}</span>
           </article>)}
           {!availableAi.length && <article>
             <div><b>Need a local model?</b><small>Ollama and LM Studio are detected automatically on loopback only.</small></div>
@@ -1038,6 +1068,8 @@ export default function App() {
         </div>
         {localAiMessage && <p className="status">{localAiMessage}</p>}
       </section>}
+
+      {section === 'ai' && <ConversationReviewPanel />}
 
       {section === 'vault' && <section className="panel">
         <p className="eyebrow">LOCAL ENCRYPTED VAULT</p>

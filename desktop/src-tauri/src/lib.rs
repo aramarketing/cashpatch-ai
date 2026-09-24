@@ -242,68 +242,25 @@ fn path_exists(path: &str) -> bool {
 
 #[tauri::command]
 async fn discover_local_ai() -> Result<Vec<LocalAiRuntime>, String> {
-  let client = reqwest::Client::builder()
-    .timeout(std::time::Duration::from_millis(700))
-    .build()
-    .map_err(|e| e.to_string())?;
-
-  let mut runtimes = Vec::new();
-
-  let ollama_url = "http://127.0.0.1:11434/api/tags";
-  egress::allow_local_ai(ollama_url)?;
-  let ollama = client
-    .get(ollama_url)
-    .send()
-    .await
-    .map(|r| r.status().is_success())
-    .unwrap_or(false);
-
-  runtimes.push(LocalAiRuntime {
-    key: "ollama".to_string(),
-    name: "Ollama".to_string(),
-    endpoint: "http://127.0.0.1:11434".to_string(),
-    available: ollama,
-  });
-
-  let lm_studio_url = "http://127.0.0.1:1234/v1/models";
-  egress::allow_local_ai(lm_studio_url)?;
-  let lm_studio = client
-    .get(lm_studio_url)
-    .send()
-    .await
-    .map(|r| r.status().is_success())
-    .unwrap_or(false);
-
-  runtimes.push(LocalAiRuntime {
-    key: "lm-studio".to_string(),
-    name: "LM Studio".to_string(),
-    endpoint: "http://127.0.0.1:1234".to_string(),
-    available: lm_studio,
-  });
-
+  let mut candidates = vec![
+    ("ollama", "Ollama", "http://127.0.0.1:11434".to_string()),
+    ("lm-studio", "LM Studio", "http://127.0.0.1:1234".to_string()),
+  ];
   for (key, name, setting) in [
     ("jev", "Jev", "local-ai-jev-endpoint"),
     ("custom-local", "Custom Local AI", "local-ai-custom-endpoint"),
   ] {
     if let Some(endpoint) = secret_get(setting) {
-      let available = if egress::allow_local_ai(&endpoint).is_ok() {
-        client
-          .get(&endpoint)
-          .send()
-          .await
-          .map(|r| r.status().is_success() || r.status().is_client_error())
-          .unwrap_or(false)
-      } else {
-        false
-      };
-
-      runtimes.push(LocalAiRuntime {
-        key: key.to_string(),
-        name: name.to_string(),
-        endpoint,
-        available,
-      });
+      candidates.push((key, name, endpoint));
     }
+  }
+  let mut runtimes = Vec::new();
+  for (key, name, endpoint) in candidates {
+    let available = local_ai::local_ai_models(key.to_string(), Some(endpoint.clone()))
+      .await.map(|models| !models.is_empty()).unwrap_or(false);
+    runtimes.push(LocalAiRuntime {
+      key: key.to_string(), name: name.to_string(), endpoint, available,
+    });
   }
 
   Ok(runtimes)

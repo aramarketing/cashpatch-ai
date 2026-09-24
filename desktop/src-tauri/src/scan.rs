@@ -130,6 +130,8 @@ pub struct ScanSnapshot {
   pub quick_plan: Option<QuickScanPlan>,
   pub findings: Vec<LocalFinding>,
   pub error: Option<String>,
+  pub coverage_warnings: Vec<String>,
+  pub ai_documents_reviewed: u64,
 }
 
 #[derive(Serialize)]
@@ -170,6 +172,8 @@ impl Default for ScanRuntime {
         quick_plan: None,
         findings: Vec::new(),
         error: None,
+        coverage_warnings: Vec::new(),
+        ai_documents_reviewed: 0,
       },
       started_at: None,
       roots: Vec::new(),
@@ -226,6 +230,31 @@ fn default_roots() -> Vec<PathBuf> {
   roots.sort();
   roots.dedup();
   roots.into_iter().filter(|p| p.exists()).collect()
+}
+
+// An explicitly selected scope must never expand to the whole computer.
+fn resolve_roots(requested: Vec<String>) -> Result<Vec<PathBuf>, String> {
+  let candidates = if requested.is_empty() {
+    default_roots()
+  } else {
+    requested.into_iter().map(PathBuf::from).collect()
+  };
+  let mut roots = Vec::new();
+  for path in candidates {
+    let canonical = path.canonicalize().map_err(|_| format!("Scan folder is unavailable: {}", path.display()))?;
+    if !canonical.is_dir() {
+      return Err(format!("Scan root must be a folder: {}", path.display()));
+    }
+    roots.push(canonical);
+  }
+  roots.sort();
+  roots.dedup();
+  let selected = roots.clone();
+  roots.retain(|path| !selected.iter().any(|parent| parent != path && path.starts_with(parent)));
+  if roots.is_empty() {
+    return Err("No readable scan roots are available".to_string());
+  }
+  Ok(roots)
 }
 
 fn skip_entry(entry: &DirEntry) -> bool {
@@ -333,22 +362,34 @@ fn local_ai_review_document(
   local_ai: &FullScanLocalAi,
   path: &Path,
   text: String,
-) -> Vec<LocalFinding> {
+  cancel: &AtomicBool,
+) -> Result<(Vec<LocalFinding>, bool), String> {
   let task = format!(
     "Review this user-approved local business document for contradictions, unresolved obligations, duplicate or suspicious costs, contract or invoice anomalies, security concerns and efficiency risks. Source path: {}. Do not execute or recommend autonomous changes.",
     path.display()
   );
-  let analysis = tauri::async_runtime::block_on(crate::local_ai::local_ai_analyze_text(
-    local_ai.provider.clone(),
-    local_ai.endpoint.clone(),
-    local_ai.model.clone(),
-    text,
-    Some(task),
-    true,
-  ));
-  let Ok(analysis) = analysis else { return Vec::new(); };
+  let ai = local_ai.clone();
+  let (sender, receiver) = std::sync::mpsc::channel();
+  let request = tauri::async_runtime::spawn(async move {
+    let result = crate::local_ai::local_ai_analyze_text(
+      ai.provider, ai.endpoint, ai.model, text, Some(task), true,
+    ).await;
+    let _ = sender.send(result);
+  });
+  let analysis = loop {
+    if cancel.load(Ordering::Relaxed) {
+      request.abort();
+      return Err("Local AI review cancelled".to_string());
+    }
+    match receiver.recv_timeout(Duration::from_millis(100)) {
+      Ok(result) => break result?,
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(_) => return Err("Local AI review task stopped".to_string()),
+    }
+  };
+  let truncated = analysis.input_truncated;
 
-  analysis.findings.into_iter().map(|finding| LocalFinding {
+  let findings = analysis.findings.into_iter().map(|finding| LocalFinding {
     id: Uuid::new_v4().to_string(),
     category: format!("local_ai_review:{}", finding.category),
     severity: finding.severity,
@@ -362,7 +403,8 @@ fn local_ai_review_document(
       "Review the source manually. {} CashPatch will not execute, edit, send, delete, pay or otherwise change anything.",
       finding.remediation
     ),
-  }).collect()
+  }).collect();
+  Ok((findings, truncated))
 }
 
 fn format_eta(seconds: u64) -> String {
@@ -478,19 +520,7 @@ pub fn quick_scan_start(
     extra_roots
   };
 
-  let mut roots = default_roots();
-  for raw in requested_roots {
-    let path = PathBuf::from(raw);
-    if path.exists() {
-      roots.push(path);
-    }
-  }
-  roots.sort();
-  roots.dedup();
-
-  if roots.is_empty() {
-    return Err("No readable scan roots are available".to_string());
-  }
+  let roots = resolve_roots(requested_roots)?;
 
   let scan_id = Uuid::new_v4().to_string();
   let pause = Arc::new(AtomicBool::new(false));
@@ -520,6 +550,8 @@ pub fn quick_scan_start(
       quick_plan: None,
       findings: Vec::new(),
       error: None,
+      coverage_warnings: Vec::new(),
+      ai_documents_reviewed: 0,
     };
     state.started_at = Some(Instant::now());
     state.roots = roots.clone();
@@ -689,6 +721,12 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
     let mut findings = Vec::<LocalFinding>::new();
     let local_ai = discover_full_scan_local_ai();
     let mut local_ai_documents_reviewed = 0_u64;
+    let mut ai_failures = 0_u64;
+    let mut ai_truncated = 0_u64;
+    let mut warnings = Vec::<String>::new();
+    if local_ai.is_none() {
+      warnings.push("No local AI model is available. Only deterministic checks ran; document meaning was not reviewed by AI.".to_string());
+    }
 
     if let Some(ai) = &local_ai {
       if let Ok(mut state) = runtime().lock() {
@@ -797,7 +835,17 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
                       state.snapshot.current_item = Some(format!("Local AI advisory review: {}", path.display()));
                     }
                     emit_snapshot(&app);
-                    findings.extend(local_ai_review_document(ai, path, text));
+                    match local_ai_review_document(ai, path, text, &cancel) {
+                      Ok((items, truncated)) => {
+                        findings.extend(items);
+                        ai_truncated += u64::from(truncated);
+                      }
+                      Err(_) => ai_failures += 1,
+                    }
+                    if !wait_if_paused(&pause, &cancel) {
+                      set_terminal_phase(&app, "cancelled");
+                      return;
+                    }
                   }
                 }
               }
@@ -866,6 +914,10 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       }
     }
 
+    if !wait_if_paused(&pause, &cancel) {
+      set_terminal_phase(&app, "cancelled");
+      return;
+    }
     for (evidence, count) in duplicate_groups {
       findings.push(LocalFinding {
         id: Uuid::new_v4().to_string(),
@@ -878,6 +930,10 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       });
     }
 
+    if !crate::inventory::vulnerability::vulnerability_database_status(app.clone())
+      .map(|status| status.available).unwrap_or(false) {
+      warnings.push("Known software vulnerabilities were not checked: no usable local vulnerability database is installed.".to_string());
+    }
     if let Ok(vulnerabilities) =
       crate::inventory::vulnerability::analyze_current_system_from_local_database(&app)
     {
@@ -941,6 +997,15 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       });
     }
 
+    if ai_failures > 0 {
+      warnings.push(format!("Local AI analysis failed for {ai_failures} documents. These are not clean results; retry after checking the local model."));
+    }
+    if ai_truncated > 0 {
+      warnings.push(format!("{ai_truncated} documents exceeded the AI input window; only their first approximately 12,000 characters were reviewed."));
+    }
+    if local_ai_documents_reviewed >= MAX_LOCAL_AI_DOCUMENTS_PER_SCAN {
+      warnings.push("The 2,500-document AI safety limit was reached. Later documents may not have received AI review.".to_string());
+    }
     if let Ok(mut state) = runtime().lock() {
       state.snapshot.phase = "completed".to_string();
       state.snapshot.current_item = None;
@@ -953,6 +1018,8 @@ pub fn full_scan_start(app: AppHandle, scan_id: String, consent: bool) -> Result
       state.snapshot.elapsed_seconds = started.elapsed().as_secs();
       state.snapshot.eta_seconds = Some(0);
       state.snapshot.findings = findings;
+      state.snapshot.coverage_warnings = warnings;
+      state.snapshot.ai_documents_reviewed = local_ai_documents_reviewed.saturating_sub(ai_failures);
       state.snapshot.paused = false;
     }
     emit_snapshot(&app);
@@ -1034,6 +1101,12 @@ pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
       lines.push(format!("- Data mapped: {} bytes", snapshot.bytes_seen));
       lines.push(format!("- Permission boundaries: {}", snapshot.permission_denied));
       lines.push(format!("- Findings: {}", snapshot.findings_count));
+      lines.push(format!("- Documents successfully reviewed by local AI: {}", snapshot.ai_documents_reviewed));
+      lines.push(String::new());
+      lines.push("## Coverage limitations".to_string());
+      for warning in &snapshot.coverage_warnings {
+        lines.push(format!("- {warning}"));
+      }
       lines.push(format!("- Duration: {} seconds", snapshot.elapsed_seconds));
       lines.push(String::new());
       lines.push("## Findings".to_string());
@@ -1070,4 +1143,24 @@ pub fn scan_export_report(path: String, format: String) -> Result<(), String> {
   }
 
   std::fs::write(destination, body).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod scope_tests {
+  use super::*;
+
+  #[test]
+  fn selected_scope_never_adds_default_roots_and_deduplicates_nested_paths() {
+    let root = std::env::temp_dir().join(format!("cashpatch-scope-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    let result = resolve_roots(vec![root.display().to_string(), root.join("nested").display().to_string()]).unwrap();
+    assert_eq!(result, vec![root.canonicalize().unwrap()]);
+    std::fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn missing_explicit_scope_fails_instead_of_scanning_home() {
+    let missing = std::env::temp_dir().join(format!("cashpatch-missing-{}", Uuid::new_v4()));
+    assert!(resolve_roots(vec![missing.display().to_string()]).is_err());
+  }
 }

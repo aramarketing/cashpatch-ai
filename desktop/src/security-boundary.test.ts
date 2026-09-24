@@ -76,8 +76,8 @@ describe('CashPatch desktop safety boundaries', () => {
     const frontend = readRepoFile('desktop/src/App.tsx')
     const notifications = readRepoFile('desktop/src/notifications.ts')
 
-    expect(backend).toContain('http://127.0.0.1:11434/api/tags')
-    expect(backend).toContain('http://127.0.0.1:1234/v1/models')
+    expect(backend).toContain('local_ai::local_ai_models')
+    expect(backend).toContain('!models.is_empty()')
     expect(backend).toContain('api.prevent_close()')
     expect(backend).toContain('window.hide()')
     expect(frontend).toContain('if (nextEnabled) await enable()')
